@@ -18,19 +18,32 @@
   ];
 
   const TYPE_OPTIONS = [
-    { value: "594500001", label: "Present" },
+    { value: "594500004", label: "CRM Implementation" },
+    { value: "594500001", label: "Daily" },
+    { value: "594500003", label: "Family" },
     { value: "594500000", label: "Future" },
+    { value: "594500002", label: "Market" },
   ];
 
   const DATE_RANGE_OPTIONS = [
     { value: "today", label: "Today" },
-    { value: "thisWeek", label: "This week" },
-    { value: "lastWeek", label: "Last week" },
-    { value: "thisMonth", label: "This month" },
-    { value: "openItems", label: "Open item" },
-    { value: "current", label: "Current" },
-    { value: "future", label: "Future" },
+    { value: "custom", label: "Custom date" },
   ];
+
+  const NOTE_STATUS_OPTIONS = [
+    { value: "in-progress", label: "In progress" },
+    { value: "done", label: "Done" },
+    { value: "moved-next-day", label: "Moved to next day" },
+    { value: "rejected", label: "Rejected" },
+    { value: "not-required", label: "Not required" },
+  ];
+
+  const NOTE_STATUS_LABELS = NOTE_STATUS_OPTIONS.reduce((acc, option) => {
+    acc[option.value] = option.label;
+    return acc;
+  }, {});
+
+  const DEFAULT_NOTE_STATUS = NOTE_STATUS_OPTIONS[0].value;
 
   const PRIORITY_LABELS = {
     594500000: "Low",
@@ -112,40 +125,6 @@
     return date.toLocaleDateString();
   }
 
-  function formatIstTimestamp(value = new Date()) {
-    const date = value instanceof Date ? value : new Date(value);
-    if (Number.isNaN(date.getTime())) {
-      return "";
-    }
-    const formatter = new Intl.DateTimeFormat("en-GB", {
-      timeZone: "Asia/Kolkata",
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true,
-    });
-    const parts = formatter.formatToParts(date);
-    const lookup = {};
-    parts.forEach((part) => {
-      if (part.type !== "literal") {
-        lookup[part.type] = part.value;
-      }
-    });
-    const day = lookup.day || "";
-    const month = lookup.month || "";
-    const year = lookup.year || "";
-    const hour = lookup.hour || "";
-    const minute = lookup.minute || "";
-    const period = (lookup.dayPeriod || "").toUpperCase();
-    if (!day || !month || !year || !hour || !minute) {
-      return "";
-    }
-    const dayPeriod = period || (date.getHours() >= 12 ? "PM" : "AM");
-    return `${day}-${month}-${year} ${hour}:${minute} ${dayPeriod} IST : `;
-  }
-
   function toIso(value) {
     if (!value) {
       return "";
@@ -211,6 +190,126 @@
     }
   }
 
+  function getPlainTextFromHtml(value) {
+    if (!value) {
+      return "";
+    }
+    const container = document.createElement("div");
+    container.innerHTML = value;
+    return container.textContent || "";
+  }
+
+  function parseLocalDate(value) {
+    if (!value) {
+      return null;
+    }
+    const parts = value.split("-").map((part) => Number(part));
+    if (parts.length !== 3 || parts.some((part) => Number.isNaN(part))) {
+      return null;
+    }
+    const [year, month, day] = parts;
+    return new Date(year, month - 1, day);
+  }
+
+  function formatDateInputLabel(value) {
+    const date = parseLocalDate(value);
+    if (!date || Number.isNaN(date.getTime())) {
+      return "";
+    }
+    return date.toLocaleDateString();
+  }
+
+  function createNoteId() {
+    return `note-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function createEmptyNote() {
+    return { id: createNoteId(), text: "", status: DEFAULT_NOTE_STATUS };
+  }
+
+  function autoResizeTextarea(textarea) {
+    if (!textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }
+
+  function normalizeNoteStatus(value) {
+    if (NOTE_STATUS_LABELS[value]) {
+      return value;
+    }
+    return DEFAULT_NOTE_STATUS;
+  }
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function buildDescriptionFromNotes(notes) {
+    if (!Array.isArray(notes)) {
+      return "";
+    }
+    let index = 0;
+    const lines = notes.reduce((acc, note) => {
+      const text = (note.text || "").trim();
+      if (!text) {
+        return acc;
+      }
+      index += 1;
+      const status = normalizeNoteStatus(note.status);
+      const label = NOTE_STATUS_LABELS[status] || "";
+      const safeText = escapeHtml(text).replace(/\r?\n/g, "<br>");
+      acc.push(
+        `<div class="note-line" data-status="${status}">` +
+          `<span class="note-index">${index}.</span>` +
+          `<span class="note-text">${safeText}</span>` +
+          ` <span class="note-status">[${escapeHtml(label)}]</span>` +
+        `</div>`
+      );
+      return acc;
+    }, []);
+    return lines.join("");
+  }
+
+  function parseNotesFromDescription(description) {
+    if (!description) {
+      return [];
+    }
+    const container = document.createElement("div");
+    container.innerHTML = description;
+    const noteNodes = Array.from(container.querySelectorAll(".note-line"));
+    if (noteNodes.length) {
+      return noteNodes.map((node) => {
+        const textNode = node.querySelector(".note-text");
+        const text = textNode ? textNode.textContent || "" : "";
+        const status = normalizeNoteStatus(node.dataset.status);
+        return { id: createNoteId(), text: text.trim(), status };
+      });
+    }
+    const plainText = getPlainTextFromHtml(description).trim();
+    if (!plainText) {
+      return [];
+    }
+    const lines = plainText
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!lines.length) {
+      return [];
+    }
+    return lines.map((line) => ({
+      id: createNoteId(),
+      text: line,
+      status: DEFAULT_NOTE_STATUS,
+    }));
+  }
+
   function startOfDay(value) {
     const date = new Date(value);
     date.setHours(0, 0, 0, 0);
@@ -223,42 +322,10 @@
     return date;
   }
 
-  function getWeekStart(value) {
-    const date = startOfDay(value);
-    const day = date.getDay();
-    const diff = day === 0 ? 6 : day - 1;
-    date.setDate(date.getDate() - diff);
-    return date;
-  }
-
   function getDateRange(rangeKey) {
     const now = new Date();
     if (rangeKey === "today") {
       return { start: startOfDay(now), end: endOfDay(now) };
-    }
-    if (rangeKey === "thisWeek") {
-      const start = getWeekStart(now);
-      const end = endOfDay(
-        new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6)
-      );
-      return { start, end };
-    }
-    if (rangeKey === "lastWeek") {
-      const thisWeekStart = getWeekStart(now);
-      const lastWeekEnd = endOfDay(new Date(thisWeekStart.getTime() - 1));
-      const lastWeekStart = startOfDay(
-        new Date(
-          lastWeekEnd.getFullYear(),
-          lastWeekEnd.getMonth(),
-          lastWeekEnd.getDate() - 6
-        )
-      );
-      return { start: lastWeekStart, end: lastWeekEnd };
-    }
-    if (rangeKey === "thisMonth") {
-      const start = startOfDay(new Date(now.getFullYear(), now.getMonth(), 1));
-      const end = endOfDay(new Date(now.getFullYear(), now.getMonth() + 1, 0));
-      return { start, end };
     }
     return { start: null, end: null };
   }
@@ -304,7 +371,6 @@
 
   function App() {
     const xrmRef = useRef(null);
-    const descriptionRef = useRef(null);
     if (!xrmRef.current) {
       xrmRef.current = getXrm();
     }
@@ -315,12 +381,17 @@
     const [clients, setClients] = useState([]);
     const [workSchedules, setWorkSchedules] = useState([]);
     const [form, setForm] = useState(DEFAULT_FORM);
+    const [notes, setNotes] = useState([createEmptyNote()]);
     const [alert, setAlert] = useState(null);
     const [lookupSchema, setLookupSchema] = useState(DEFAULT_LOOKUP_SCHEMA);
     const [dateRange, setDateRange] = useState("today");
+    const [customFrom, setCustomFrom] = useState("");
+    const [customTo, setCustomTo] = useState("");
+    const [typeFilter, setTypeFilter] = useState("all");
     const [panelMode, setPanelMode] = useState("empty");
     const [selectedId, setSelectedId] = useState(null);
     const [selectedRecord, setSelectedRecord] = useState(null);
+    const [scheduleOpen, setScheduleOpen] = useState(false);
     const [loading, setLoading] = useState({
       companies: false,
       clients: false,
@@ -345,8 +416,13 @@
       if (!xrm || !xrm.WebApi) {
         return;
       }
-      loadWorkSchedules(dateRange);
-    }, [xrm, dateRange]);
+      loadWorkSchedules({
+        rangeKey: dateRange,
+        typeFilterValue: typeFilter,
+        customFrom,
+        customTo,
+      });
+    }, [xrm, dateRange, customFrom, customTo, typeFilter]);
 
     useEffect(() => {
       if (!xrm || !xrm.WebApi) {
@@ -376,6 +452,49 @@
       }
     }, [workSchedules, selectedId, panelMode]);
 
+    useEffect(() => {
+      if (!scheduleOpen) {
+        return;
+      }
+      const parsed = parseNotesFromDescription(form.description);
+      setNotes(parsed.length ? parsed : [createEmptyNote()]);
+    }, [scheduleOpen, selectedId]);
+
+    useEffect(() => {
+      if (!scheduleOpen) {
+        return;
+      }
+      const description = buildDescriptionFromNotes(notes);
+      setForm((prev) =>
+        prev.description === description ? prev : { ...prev, description }
+      );
+    }, [notes, scheduleOpen]);
+
+    useEffect(() => {
+      if (!scheduleOpen) {
+        return;
+      }
+      const frame = window.requestAnimationFrame(() => {
+        document
+          .querySelectorAll(".note-input")
+          .forEach((node) => autoResizeTextarea(node));
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }, [notes, scheduleOpen]);
+
+    useEffect(() => {
+      if (!scheduleOpen) {
+        return;
+      }
+      const handleKeyDown = (event) => {
+        if (event.key === "Escape") {
+          setScheduleOpen(false);
+        }
+      };
+      window.addEventListener("keydown", handleKeyDown);
+      return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [scheduleOpen]);
+
     function buildFormFromRecord(record) {
       return {
         name: record.tcrm_name || "",
@@ -401,14 +520,41 @@
       };
     }
 
+    function resetNotesFromDescription(description) {
+      const parsed = parseNotesFromDescription(description);
+      setNotes(parsed.length ? parsed : [createEmptyNote()]);
+    }
+
     function handleRangeChange(event) {
       setDateRange(event.target.value);
       setSelectedId(null);
       setSelectedRecord(null);
+      setScheduleOpen(false);
       if (panelMode === "edit") {
         setPanelMode("empty");
         setForm(DEFAULT_FORM);
+        resetNotesFromDescription("");
       }
+    }
+
+    function handleTypeFilterChange(event) {
+      setTypeFilter(event.target.value);
+      setSelectedId(null);
+      setSelectedRecord(null);
+      setScheduleOpen(false);
+      if (panelMode === "edit") {
+        setPanelMode("empty");
+        setForm(DEFAULT_FORM);
+        resetNotesFromDescription("");
+      }
+    }
+
+    function handleCustomFromChange(event) {
+      setCustomFrom(event.target.value);
+    }
+
+    function handleCustomToChange(event) {
+      setCustomTo(event.target.value);
     }
 
     function handleSelectRecord(record) {
@@ -416,7 +562,9 @@
       setSelectedRecord(record);
       setPanelMode("edit");
       setForm(buildFormFromRecord(record));
+      resetNotesFromDescription(record.tcrm_description || "");
       setAlert(null);
+      setScheduleOpen(false);
     }
 
     function handleNewWork() {
@@ -424,26 +572,48 @@
       setSelectedId(null);
       setSelectedRecord(null);
       setForm(DEFAULT_FORM);
+      resetNotesFromDescription("");
       setAlert(null);
+      setScheduleOpen(false);
     }
 
-    function handleInsertTimestamp() {
-      const stamp = formatIstTimestamp();
-      if (!stamp) {
-        return;
-      }
-      let nextDescription = "";
-      setForm((prev) => {
-        const needsNewline = prev.description && !prev.description.endsWith("\n");
-        nextDescription = `${prev.description}${needsNewline ? "\n" : ""}${stamp}`;
-        return { ...prev, description: nextDescription };
-      });
-      requestAnimationFrame(() => {
-        if (descriptionRef.current) {
-          descriptionRef.current.focus();
-          descriptionRef.current.selectionStart = nextDescription.length;
-          descriptionRef.current.selectionEnd = nextDescription.length;
+    function handleScheduleOpen() {
+      setScheduleOpen(true);
+    }
+
+    function handleScheduleClose() {
+      setScheduleOpen(false);
+    }
+
+    function handleNoteTextChange(noteId, event) {
+      const value = event.target.value;
+      autoResizeTextarea(event.target);
+      setNotes((prev) =>
+        prev.map((note) =>
+          note.id === noteId ? { ...note, text: value } : note
+        )
+      );
+    }
+
+    function handleNoteStatusChange(noteId, event) {
+      const value = event.target.value;
+      setNotes((prev) =>
+        prev.map((note) =>
+          note.id === noteId ? { ...note, status: value } : note
+        )
+      );
+    }
+
+    function handleAddNote() {
+      setNotes((prev) => prev.concat(createEmptyNote()));
+    }
+
+    function handleRemoveNote(noteId) {
+      setNotes((prev) => {
+        if (prev.length <= 1) {
+          return [createEmptyNote()];
         }
+        return prev.filter((note) => note.id !== noteId);
       });
     }
 
@@ -549,24 +719,43 @@
       }
     }
 
-    async function loadWorkSchedules(rangeKey) {
+    async function loadWorkSchedules(filters = {}) {
+      const {
+        rangeKey = dateRange,
+        typeFilterValue = typeFilter,
+        customFrom: customFromValue = customFrom,
+        customTo: customToValue = customTo,
+      } = filters;
       setLoading((prev) => ({ ...prev, workSchedules: true }));
       try {
         const filterParts = ["statecode eq 0"];
-        if (rangeKey === "openItems") {
-          filterParts.push("tcrm_status ne 594500003");
-        } else if (rangeKey === "current") {
-          filterParts.push("tcrm_type eq 594500001");
-        } else if (rangeKey === "future") {
-          filterParts.push("tcrm_type eq 594500000");
-        } else {
+        if (typeFilterValue && typeFilterValue !== "all") {
+          filterParts.push(`tcrm_type eq ${Number(typeFilterValue)}`);
+        }
+        if (rangeKey === "today") {
           const range = getDateRange(rangeKey);
           if (range.start && range.end) {
             const rangeStartIso = toIso(range.start);
             const rangeEndIso = toIso(range.end);
-            filterParts.push(`tcrm_startdate le ${rangeEndIso}`);
-            filterParts.push(`tcrm_enddate ge ${rangeStartIso}`);
-            filterParts.push("tcrm_type eq 594500001");
+            filterParts.push(`tcrm_startdate ge ${rangeStartIso}`);
+            filterParts.push(`tcrm_enddate le ${rangeEndIso}`);
+          }
+        } else if (rangeKey === "custom") {
+          const customStart = parseLocalDate(customFromValue);
+          const customEnd = parseLocalDate(customToValue);
+          if (customStart && customEnd) {
+            const start =
+              customStart.getTime() <= customEnd.getTime()
+                ? customStart
+                : customEnd;
+            const end =
+              customStart.getTime() <= customEnd.getTime()
+                ? customEnd
+                : customStart;
+            const rangeStartIso = toIso(startOfDay(start));
+            const rangeEndIso = toIso(endOfDay(end));
+            filterParts.push(`tcrm_startdate ge ${rangeStartIso}`);
+            filterParts.push(`tcrm_enddate le ${rangeEndIso}`);
           }
         }
         const query =
@@ -605,12 +794,13 @@
     function buildPayload() {
       const payload = {};
       const name = form.name.trim();
-      const description = form.description.trim();
+      const description = (form.description || "").trim();
+      const descriptionText = getPlainTextFromHtml(description).trim();
 
       if (name) {
         payload.tcrm_name = name;
       }
-      if (description) {
+      if (descriptionText) {
         payload.tcrm_description = description;
       }
       if (form.startDate) {
@@ -683,7 +873,7 @@
         const payload = buildPayload();
         await xrm.WebApi.createRecord("tcrm_workschedule", payload);
         setAlert({ type: "success", text: "Work schedule created." });
-        await loadWorkSchedules(dateRange);
+        await loadWorkSchedules();
         setForm((prev) => ({
           ...prev,
           name: "",
@@ -692,6 +882,7 @@
           endDate: "",
           eta: "",
         }));
+        resetNotesFromDescription("");
       } catch (error) {
         setAlert({
           type: "error",
@@ -739,7 +930,7 @@
           payload
         );
         setAlert({ type: "success", text: "Work schedule updated." });
-        await loadWorkSchedules(dateRange);
+        await loadWorkSchedules();
       } catch (error) {
         setAlert({
           type: "error",
@@ -754,6 +945,13 @@
     );
     const clientOptions = clients.map((client) =>
       h("option", { key: client.id, value: client.id }, client.name)
+    );
+    const typeFilterOptions = [
+      h("option", { key: "type-all", value: "all" }, "All types"),
+    ].concat(
+      TYPE_OPTIONS.map((option) =>
+        h("option", { key: option.value, value: option.value }, option.label)
+      )
     );
 
     const companyPlaceholder = loading.companies
@@ -770,9 +968,20 @@
       ? "Select client"
       : "No active clients for this company";
 
-    const rangeLabel =
-      DATE_RANGE_OPTIONS.find((option) => option.value === dateRange)?.label ||
-      "Range";
+    const rangeLabel = (() => {
+      if (dateRange === "custom") {
+        if (customFrom && customTo) {
+          const fromLabel = formatDateInputLabel(customFrom) || customFrom;
+          const toLabel = formatDateInputLabel(customTo) || customTo;
+          return `Custom: ${fromLabel} - ${toLabel}`;
+        }
+        return "Custom: Select dates";
+      }
+      return (
+        DATE_RANGE_OPTIONS.find((option) => option.value === dateRange)?.label ||
+        "Range"
+      );
+    })();
 
     const sortedWorkSchedules = workSchedules.slice().sort((a, b) => {
       const orderDiff = getStatusOrder(a) - getStatusOrder(b);
@@ -796,6 +1005,28 @@
     const isEditMode = panelMode === "edit";
     const canShowForm = isCreateMode || (isEditMode && selectedId);
     const showEyebrow = !isCreateMode && !isEditMode;
+    const formId = "work-form";
+    const scheduleDialogId = "schedule-dialog";
+    const scheduleDialogTitleId = "schedule-dialog-title";
+    const formDisabled = !xrm || loading.saving;
+    const saveLabel = loading.saving
+      ? "Saving..."
+      : isCreateMode
+      ? "Create Work"
+      : "Save";
+    const resetLabel = isCreateMode ? "Clear" : "Reset";
+
+    const handleFormReset = () => {
+      if (isCreateMode) {
+        setForm(DEFAULT_FORM);
+        resetNotesFromDescription("");
+        return;
+      }
+      if (selectedRecord) {
+        setForm(buildFormFromRecord(selectedRecord));
+        resetNotesFromDescription(selectedRecord.tcrm_description || "");
+      }
+    };
 
     const formFields = h(
       "div",
@@ -951,29 +1182,23 @@
       h(
         Field,
         {
-          id: "description",
-          label: "Description",
+          id: "schedule",
+          label: "Schedule",
           full: true,
-          actions: h(
-            "button",
-            {
-              type: "button",
-              className: "btn-ghost btn-inline",
-              onClick: handleInsertTimestamp,
-              disabled: !xrm || loading.saving,
-            },
-            "Add Timestamp"
-          ),
         },
-        h("textarea", {
-          id: "description",
-          name: "description",
-          rows: 6,
-          value: form.description,
-          onChange: handleChange,
-          disabled: !xrm || loading.saving,
-          ref: descriptionRef,
-        })
+        h(
+          "button",
+          {
+            type: "button",
+            id: "schedule",
+            className: "btn-secondary schedule-btn",
+            onClick: handleScheduleOpen,
+            disabled: formDisabled,
+            "aria-haspopup": "dialog",
+            "aria-controls": scheduleDialogId,
+          },
+          "See Schedule"
+        )
       )
     );
     return h(
@@ -997,34 +1222,109 @@
               "div",
               { className: "panel-actions" },
               h(
-                "select",
-                {
-                  id: "dateRange",
-                  className: "filter-select",
-                  value: dateRange,
-                  onChange: handleRangeChange,
-                  disabled: !xrm || loading.workSchedules,
-                },
-                DATE_RANGE_OPTIONS.map((option) =>
-                  h(
-                    "option",
-                    { key: option.value, value: option.value },
-                    option.label
+                "div",
+                { className: "filter-group" },
+                h(
+                  "select",
+                  {
+                    id: "dateRange",
+                    className: "filter-select",
+                    value: dateRange,
+                    onChange: handleRangeChange,
+                    disabled: !xrm || loading.workSchedules,
+                  },
+                  DATE_RANGE_OPTIONS.map((option) =>
+                    h(
+                      "option",
+                      { key: option.value, value: option.value },
+                      option.label
+                    )
                   )
+                ),
+                h(
+                  "select",
+                  {
+                    id: "typeFilter",
+                    className: "filter-select",
+                    value: typeFilter,
+                    onChange: handleTypeFilterChange,
+                    disabled: !xrm || loading.workSchedules,
+                  },
+                  typeFilterOptions
                 )
               ),
               h(
                 "button",
                 {
                   type: "button",
-                  className: "btn-ghost",
-                  onClick: () => loadWorkSchedules(dateRange),
+                  className: `btn-ghost icon-button${
+                    loading.workSchedules ? " is-loading" : ""
+                  }`,
+                  onClick: () => loadWorkSchedules(),
                   disabled: !xrm || loading.workSchedules,
+                  title: "Refresh",
+                  "aria-label": "Refresh list",
                 },
-                loading.workSchedules ? "Refreshing..." : "Refresh"
+                h("span", { className: "sr-only" }, "Refresh"),
+                h(
+                  "svg",
+                  {
+                    viewBox: "0 0 24 24",
+                    "aria-hidden": "true",
+                    focusable: "false",
+                  },
+                  h("path", {
+                    d: "M20 12a8 8 0 1 1-2.34-5.66",
+                    fill: "none",
+                    stroke: "currentColor",
+                    strokeWidth: 1.8,
+                    strokeLinecap: "round",
+                    strokeLinejoin: "round",
+                  }),
+                  h("polyline", {
+                    points: "20 4 20 10 14 10",
+                    fill: "none",
+                    stroke: "currentColor",
+                    strokeWidth: 1.8,
+                    strokeLinecap: "round",
+                    strokeLinejoin: "round",
+                  })
+                )
               )
             )
           ),
+          dateRange === "custom"
+            ? h(
+                "div",
+                { className: "filter-dates" },
+                h(
+                  "div",
+                  { className: "filter-date" },
+                  h("label", { htmlFor: "fromDate" }, "From date"),
+                  h("input", {
+                    id: "fromDate",
+                    type: "date",
+                    value: customFrom,
+                    onChange: handleCustomFromChange,
+                    disabled: !xrm || loading.workSchedules,
+                    max: customTo || undefined,
+                  })
+                ),
+                h(
+                  "div",
+                  { className: "filter-date" },
+                  h("label", { htmlFor: "toDate" }, "To date"),
+                  h("input", {
+                    id: "toDate",
+                    type: "date",
+                    value: customTo,
+                    onChange: handleCustomToChange,
+                    disabled: !xrm || loading.workSchedules,
+                    min: customFrom || undefined,
+                  })
+                )
+              )
+            : null,
           h(
             "div",
             { className: "range-meta" },
@@ -1127,13 +1427,37 @@
             h(
               "div",
               { className: "panel-actions" },
+              canShowForm
+                ? h(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn-secondary",
+                      onClick: handleFormReset,
+                      disabled: formDisabled,
+                    },
+                    resetLabel
+                  )
+                : null,
+              canShowForm
+                ? h(
+                    "button",
+                    {
+                      type: "submit",
+                      form: formId,
+                      className: "btn-primary",
+                      disabled: formDisabled,
+                    },
+                    saveLabel
+                  )
+                : null,
               h(
                 "button",
                 {
                   type: "button",
                   className: "btn-primary",
                   onClick: handleNewWork,
-                  disabled: !xrm || loading.saving,
+                  disabled: formDisabled,
                 },
                 "+ Work"
               )
@@ -1170,40 +1494,11 @@
           canShowForm
             ? h(
                 "form",
-                { onSubmit: isCreateMode ? handleCreate : handleUpdate },
-                formFields,
-                h(
-                  "div",
-                  { className: "form-actions" },
-                  h(
-                    "button",
-                    {
-                      type: "button",
-                      className: "btn-secondary",
-                      onClick: isCreateMode
-                        ? () => setForm(DEFAULT_FORM)
-                        : () =>
-                            selectedRecord
-                              ? setForm(buildFormFromRecord(selectedRecord))
-                              : null,
-                      disabled: !xrm || loading.saving,
-                    },
-                    isCreateMode ? "Clear" : "Reset"
-                  ),
-                  h(
-                    "button",
-                    {
-                      type: "submit",
-                      className: "btn-primary",
-                      disabled: !xrm || loading.saving,
-                    },
-                    loading.saving
-                      ? "Saving..."
-                      : isCreateMode
-                      ? "Create Work"
-                      : "Save Changes"
-                  )
-                )
+                {
+                  id: formId,
+                  onSubmit: isCreateMode ? handleCreate : handleUpdate,
+                },
+                formFields
               )
             : h(
                 "div",
@@ -1211,7 +1506,140 @@
                 "Select a work schedule from the left or click + Work to create a new one."
               )
         )
-      )
+      ),
+      scheduleOpen
+        ? h(
+            "div",
+            { className: "modal-overlay", onClick: handleScheduleClose },
+            h(
+              "div",
+              {
+                id: scheduleDialogId,
+                className: "modal schedule-modal",
+                role: "dialog",
+                "aria-modal": "true",
+                "aria-labelledby": scheduleDialogTitleId,
+                onClick: (event) => event.stopPropagation(),
+              },
+              h(
+                "div",
+                { className: "modal-header" },
+                h(
+                  "h3",
+                  { id: scheduleDialogTitleId, className: "modal-title" },
+                  "Schedule"
+                ),
+                h(
+                  "div",
+                  { className: "modal-actions" },
+                  h(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn-secondary",
+                      onClick: handleFormReset,
+                      disabled: formDisabled,
+                    },
+                    resetLabel
+                  ),
+                  h(
+                    "button",
+                    {
+                      type: "submit",
+                      form: formId,
+                      className: "btn-primary",
+                      disabled: formDisabled,
+                    },
+                    saveLabel
+                  ),
+                  h(
+                    "button",
+                    {
+                      type: "button",
+                      className: "btn-secondary",
+                      onClick: handleScheduleClose,
+                      disabled: formDisabled,
+                    },
+                    "Close"
+                  )
+                )
+              ),
+              h(
+                "div",
+                { className: "modal-body" },
+                h(
+                  "div",
+                  { className: "notes-panel" },
+                  h(
+                    "div",
+                    { className: "notes-header" },
+                    h("div", { className: "notes-title" }, "Description"),
+                    h(
+                      "button",
+                      {
+                        type: "button",
+                        className: "btn-secondary btn-inline",
+                        onClick: handleAddNote,
+                        disabled: formDisabled,
+                      },
+                      "+ Note"
+                    )
+                  ),
+                  h(
+                    "p",
+                    { className: "notes-hint" },
+                    "Add point-by-point notes and set a status for each one."
+                  ),
+                  notes.map((note, index) =>
+                    h(
+                      "div",
+                      { className: "note-row", key: note.id },
+                      h("div", { className: "note-index" }, `${index + 1}.`),
+                      h("textarea", {
+                        className: "note-input",
+                        value: note.text,
+                        placeholder: "Write a note",
+                        rows: 1,
+                        onChange: (event) =>
+                          handleNoteTextChange(note.id, event),
+                        disabled: formDisabled,
+                      }),
+                      h(
+                        "select",
+                        {
+                          className: "note-status",
+                          value: note.status,
+                          onChange: (event) =>
+                            handleNoteStatusChange(note.id, event),
+                          disabled: formDisabled,
+                        },
+                        NOTE_STATUS_OPTIONS.map((option) =>
+                          h(
+                            "option",
+                            { key: option.value, value: option.value },
+                            option.label
+                          )
+                        )
+                      ),
+                      h(
+                        "button",
+                        {
+                          type: "button",
+                          className: "btn-ghost btn-inline note-remove",
+                          onClick: () => handleRemoveNote(note.id),
+                          disabled: formDisabled,
+                          "aria-label": "Remove note",
+                          title: "Remove note",
+                        },
+                        "x"
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        : null
     );
   }
 
