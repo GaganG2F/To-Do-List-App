@@ -32,8 +32,8 @@
 
   const NOTE_STATUS_OPTIONS = [
     { value: "in-progress", label: "In progress" },
-    { value: "done", label: "Done" },
     { value: "moved-next-day", label: "Moved to next day" },
+    { value: "done", label: "Done" },
     { value: "rejected", label: "Rejected" },
     { value: "not-required", label: "Not required" },
   ];
@@ -251,6 +251,27 @@
       .replace(/'/g, "&#39;");
   }
 
+  function decodeHtml(value) {
+    if (!value) {
+      return "";
+    }
+    const textarea = document.createElement("textarea");
+    textarea.innerHTML = value;
+    return textarea.value;
+  }
+
+  function getNoteTextFromNode(node) {
+    if (!node) {
+      return "";
+    }
+    const html = node.innerHTML || "";
+    if (!html) {
+      return node.textContent || "";
+    }
+    const withBreaks = html.replace(/<br\s*\/?>/gi, "\n");
+    return decodeHtml(withBreaks);
+  }
+
   function buildDescriptionFromNotes(notes) {
     if (!Array.isArray(notes)) {
       return "";
@@ -287,7 +308,7 @@
     if (noteNodes.length) {
       return noteNodes.map((node) => {
         const textNode = node.querySelector(".note-text");
-        const text = textNode ? textNode.textContent || "" : "";
+        const text = getNoteTextFromNode(textNode);
         const status = normalizeNoteStatus(node.dataset.status);
         return { id: createNoteId(), text: text.trim(), status };
       });
@@ -737,8 +758,9 @@
           if (range.start && range.end) {
             const rangeStartIso = toIso(range.start);
             const rangeEndIso = toIso(range.end);
-            filterParts.push(`tcrm_startdate ge ${rangeStartIso}`);
-            filterParts.push(`tcrm_enddate le ${rangeEndIso}`);
+            // Include records where today falls between start and end (inclusive).
+            filterParts.push(`tcrm_startdate le ${rangeEndIso}`);
+            filterParts.push(`tcrm_enddate ge ${rangeStartIso}`);
           }
         } else if (rangeKey === "custom") {
           const customStart = parseLocalDate(customFromValue);
@@ -1593,7 +1615,7 @@
                   notes.map((note, index) =>
                     h(
                       "div",
-                      { className: "note-row", key: note.id },
+                      { className: `note-row status-${note.status}`, key: note.id },
                       h("div", { className: "note-index" }, `${index + 1}.`),
                       h("textarea", {
                         className: "note-input",

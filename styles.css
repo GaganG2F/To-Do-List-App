@@ -588,6 +588,26 @@ body::after {
   background: rgba(217, 241, 241, 0.6);
 }
 
+.note-row.status-in-progress {
+  background: rgba(217, 241, 241, 0.6);
+}
+
+.note-row.status-moved-next-day {
+  background: rgba(255, 244, 198, 0.85);
+}
+
+.note-row.status-done {
+  background: rgba(216, 244, 228, 0.75);
+}
+
+.note-row.status-rejected {
+  background: rgba(248, 223, 228, 0.85);
+}
+
+.note-row.status-not-required {
+  background: rgba(58, 123, 129, 0.08);
+}
+
 .note-index {
   font-weight: 600;
   color: var(--teal);
