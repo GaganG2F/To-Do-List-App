@@ -26,8 +26,10 @@
   ];
 
   const DATE_RANGE_OPTIONS = [
+    { value: "all", label: "All dates" },
     { value: "today", label: "Today" },
-    { value: "custom", label: "Custom date" },
+    { value: "this-week", label: "This week" },
+    { value: "custom", label: "Custom range" },
   ];
 
   const NOTE_STATUS_OPTIONS = [
@@ -37,6 +39,56 @@
     { value: "rejected", label: "Rejected" },
     { value: "not-required", label: "Not required" },
   ];
+
+  const NOTE_COLOR_OPTIONS = [
+    { value: "#3a7b81", label: "Teal" },
+    { value: "#e2231a", label: "Red" },
+    { value: "#2563eb", label: "Blue" },
+    { value: "#16a34a", label: "Green" },
+    { value: "#f97316", label: "Orange" },
+    { value: "#7c3aed", label: "Purple" },
+    { value: "#111827", label: "Dark" },
+  ];
+
+  const STATUS_FILTER_OPTIONS = [
+    { value: "active", label: "Active" },
+    { value: "all", label: "All" },
+  ].concat(STATUS_OPTIONS);
+
+  const COMPANY_PALETTES = [
+    {
+      primary: "#0f766e",
+      secondary: "#5eead4",
+      glow: "rgba(15, 118, 110, 0.18)",
+      ink: "#0f172a",
+    },
+    {
+      primary: "#2563eb",
+      secondary: "#93c5fd",
+      glow: "rgba(37, 99, 235, 0.16)",
+      ink: "#0b1324",
+    },
+    {
+      primary: "#ea580c",
+      secondary: "#fdba74",
+      glow: "rgba(234, 88, 12, 0.16)",
+      ink: "#1f1308",
+    },
+    {
+      primary: "#be123c",
+      secondary: "#fda4af",
+      glow: "rgba(190, 18, 60, 0.16)",
+      ink: "#23090f",
+    },
+    {
+      primary: "#4338ca",
+      secondary: "#c4b5fd",
+      glow: "rgba(67, 56, 202, 0.16)",
+      ink: "#111127",
+    },
+  ];
+
+  const UNASSIGNED_COMPANY_ID = "__unassigned__";
 
   const NOTE_STATUS_LABELS = NOTE_STATUS_OPTIONS.reduce((acc, option) => {
     acc[option.value] = option.label;
@@ -59,6 +111,11 @@
     594500004: "Pending",
     594500003: "Completed",
   };
+
+  const TYPE_LABELS = TYPE_OPTIONS.reduce((acc, option) => {
+    acc[option.value] = option.label;
+    return acc;
+  }, {});
 
   const STATUS_ORDER = {
     "in progress": 1,
@@ -228,7 +285,7 @@
   }
 
   function autoResizeTextarea(textarea) {
-    if (!textarea) {
+    if (!textarea || textarea.tagName !== "TEXTAREA") {
       return;
     }
     textarea.style.height = "auto";
@@ -249,6 +306,74 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function noteHtmlFromPlainText(text) {
+    if (!text) {
+      return "";
+    }
+    return escapeHtml(text).replace(/\r?\n/g, "<br>");
+  }
+
+  function getNotePlainText(html) {
+    if (!html) {
+      return "";
+    }
+    const container = document.createElement("div");
+    container.innerHTML = html.replace(/<br\s*\/?>/gi, "\n");
+    return (container.textContent || "").replace(/\u00a0/g, " ").trim();
+  }
+
+  function sanitizeNoteHtml(html) {
+    if (!html) {
+      return "";
+    }
+    const container = document.createElement("div");
+    container.innerHTML = html;
+    const output = document.createElement("div");
+
+    const appendChildren = (source, target) => {
+      Array.from(source.childNodes).forEach((child) => {
+        if (child.nodeType === Node.TEXT_NODE) {
+          target.appendChild(document.createTextNode(child.nodeValue));
+          return;
+        }
+        if (child.nodeType !== Node.ELEMENT_NODE) {
+          return;
+        }
+        const tag = child.tagName.toLowerCase();
+        if (tag === "br") {
+          target.appendChild(document.createElement("br"));
+          return;
+        }
+        if (tag === "span" || tag === "font") {
+          const span = document.createElement("span");
+          const color = child.getAttribute("color") || child.style.color;
+          if (color) {
+            span.style.color = color;
+          }
+          if (child.classList && child.classList.contains("timestamp-line")) {
+            span.classList.add("timestamp-line");
+          }
+          appendChildren(child, span);
+          target.appendChild(span);
+          return;
+        }
+        if (tag === "div" || tag === "p") {
+          appendChildren(child, target);
+          if (child.nextSibling) {
+            target.appendChild(document.createElement("br"));
+          }
+          return;
+        }
+        appendChildren(child, target);
+      });
+    };
+
+    appendChildren(container, output);
+    let cleaned = output.innerHTML;
+    cleaned = cleaned.replace(/^(<br\s*\/?>\s*)+|(<br\s*\/?>\s*)+$/g, "");
+    return cleaned;
   }
 
   function decodeHtml(value) {
@@ -272,24 +397,49 @@
     return decodeHtml(withBreaks);
   }
 
+  function insertHtmlAtCursor(html) {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return false;
+    }
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const container = document.createElement("div");
+    container.innerHTML = html;
+    const fragment = document.createDocumentFragment();
+    let node = null;
+    let lastNode = null;
+    while ((node = container.firstChild)) {
+      lastNode = fragment.appendChild(node);
+    }
+    range.insertNode(fragment);
+    if (lastNode) {
+      range.setStartAfter(lastNode);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    return true;
+  }
+
   function buildDescriptionFromNotes(notes) {
     if (!Array.isArray(notes)) {
       return "";
     }
     let index = 0;
     const lines = notes.reduce((acc, note) => {
-      const text = (note.text || "").trim();
-      if (!text) {
+      const safeHtml = sanitizeNoteHtml(note.text || "");
+      const plainText = getNotePlainText(safeHtml);
+      if (!plainText) {
         return acc;
       }
       index += 1;
       const status = normalizeNoteStatus(note.status);
       const label = NOTE_STATUS_LABELS[status] || "";
-      const safeText = escapeHtml(text).replace(/\r?\n/g, "<br>");
       acc.push(
         `<div class="note-line" data-status="${status}">` +
           `<span class="note-index">${index}.</span>` +
-          `<span class="note-text">${safeText}</span>` +
+          `<span class="note-text">${safeHtml}</span>` +
           ` <span class="note-status">[${escapeHtml(label)}]</span>` +
         `</div>`
       );
@@ -308,9 +458,9 @@
     if (noteNodes.length) {
       return noteNodes.map((node) => {
         const textNode = node.querySelector(".note-text");
-        const text = getNoteTextFromNode(textNode);
+        const html = textNode ? textNode.innerHTML : "";
         const status = normalizeNoteStatus(node.dataset.status);
-        return { id: createNoteId(), text: text.trim(), status };
+        return { id: createNoteId(), text: sanitizeNoteHtml(html), status };
       });
     }
     const plainText = getPlainTextFromHtml(description).trim();
@@ -326,7 +476,7 @@
     }
     return lines.map((line) => ({
       id: createNoteId(),
-      text: line,
+      text: noteHtmlFromPlainText(line),
       status: DEFAULT_NOTE_STATUS,
     }));
   }
@@ -343,12 +493,43 @@
     return date;
   }
 
-  function getDateRange(rangeKey) {
+  function getStartOfWeek(value) {
+    const date = startOfDay(value);
+    const day = date.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    date.setDate(date.getDate() + diff);
+    return date;
+  }
+
+  function getDateRange(rangeKey, customFromValue, customToValue) {
     const now = new Date();
     if (rangeKey === "today") {
-      return { start: startOfDay(now), end: endOfDay(now) };
+      return { start: startOfDay(now), end: endOfDay(now), label: "Today" };
     }
-    return { start: null, end: null };
+    if (rangeKey === "this-week") {
+      const start = getStartOfWeek(now);
+      const end = endOfDay(new Date(start.getTime() + 6 * 86400000));
+      return { start, end, label: "This week" };
+    }
+    if (rangeKey === "custom") {
+      const fromDate = parseLocalDate(customFromValue);
+      const toDate = parseLocalDate(customToValue);
+      if (!fromDate && !toDate) {
+        return { start: null, end: null, label: "Custom range" };
+      }
+      const start = startOfDay(fromDate || toDate);
+      const end = endOfDay(toDate || fromDate);
+      const actualStart = start.getTime() <= end.getTime() ? start : end;
+      const actualEnd = start.getTime() <= end.getTime() ? end : start;
+      const fromLabel = formatDateInputLabel(toIso(actualStart).slice(0, 10));
+      const toLabel = formatDateInputLabel(toIso(actualEnd).slice(0, 10));
+      return {
+        start: actualStart,
+        end: actualEnd,
+        label: fromLabel && toLabel ? `${fromLabel} - ${toLabel}` : "Custom",
+      };
+    }
+    return { start: null, end: null, label: "All dates" };
   }
 
   function normalizeLabel(value) {
@@ -372,6 +553,201 @@
     return label || getFormatted(item, "tcrm_priorityority") || "";
   }
 
+  function getTypeLabel(item) {
+    const label = TYPE_LABELS[String(item.tcrm_type || "")];
+    return label || getFormatted(item, "tcrm_type") || "No type";
+  }
+
+  function isCompletedStatusValue(value) {
+    return String(value || "") === "594500003";
+  }
+
+  function matchesStatusFilter(item, filterValue) {
+    if (filterValue === "all") {
+      return true;
+    }
+    if (filterValue === "active") {
+      return !isCompletedStatusValue(item.tcrm_status);
+    }
+    return String(item.tcrm_status || "") === String(filterValue || "");
+  }
+
+  function getCompanyKey(item) {
+    return normalizeGuid(item._tcrm_company_value) || UNASSIGNED_COMPANY_ID;
+  }
+
+  function getCompanyName(item) {
+    return getFormatted(item, "_tcrm_company_value") || "Unassigned";
+  }
+
+  function getClientName(item) {
+    return getFormatted(item, "_tcrm_client_value") || "No client";
+  }
+
+  function getDescriptionPreview(html, maxLength = 120) {
+    const plainText = getPlainTextFromHtml(html).replace(/\s+/g, " ").trim();
+    if (!plainText) {
+      return "No description yet.";
+    }
+    if (plainText.length <= maxLength) {
+      return plainText;
+    }
+    return `${plainText.slice(0, maxLength).trim()}...`;
+  }
+
+  function countNotesInDescription(description) {
+    if (!description) {
+      return 0;
+    }
+    const noteMatches = description.match(/class=["']note-line["']/g);
+    if (noteMatches && noteMatches.length) {
+      return noteMatches.length;
+    }
+    return getPlainTextFromHtml(description)
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean).length;
+  }
+
+  function getTargetDate(item) {
+    return item.tcrm_eta || item.tcrm_enddate || item.tcrm_startdate || "";
+  }
+
+  function getDueDescriptor(item) {
+    const targetValue = getTargetDate(item);
+    if (!targetValue) {
+      return { label: "No ETA", tone: "muted" };
+    }
+    const targetDate = startOfDay(targetValue);
+    const today = startOfDay(new Date());
+    const diffDays = Math.round((targetDate.getTime() - today.getTime()) / 86400000);
+    if (diffDays < 0 && !isCompletedStatusValue(item.tcrm_status)) {
+      return { label: `Overdue ${Math.abs(diffDays)}d`, tone: "danger" };
+    }
+    if (diffDays === 0) {
+      return { label: "Due today", tone: "warning" };
+    }
+    if (diffDays > 0 && diffDays <= 3) {
+      return { label: `Due in ${diffDays}d`, tone: "accent" };
+    }
+    return { label: `ETA ${formatShortDate(targetValue)}`, tone: "soft" };
+  }
+
+  function isDueSoon(item) {
+    const due = getDueDescriptor(item);
+    return due.tone === "warning" || due.tone === "accent";
+  }
+
+  function isOverdue(item) {
+    return getDueDescriptor(item).tone === "danger";
+  }
+
+  function getInitials(value) {
+    const words = String(value || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (!words.length) {
+      return "TM";
+    }
+    if (words.length === 1) {
+      return words[0].slice(0, 2).toUpperCase();
+    }
+    return `${words[0][0]}${words[1][0]}`.toUpperCase();
+  }
+
+  function hashString(value) {
+    let hash = 0;
+    const text = String(value || "");
+    for (let index = 0; index < text.length; index += 1) {
+      hash = (hash << 5) - hash + text.charCodeAt(index);
+      hash |= 0;
+    }
+    return Math.abs(hash);
+  }
+
+  function getPaletteFromSeed(value) {
+    return COMPANY_PALETTES[hashString(value) % COMPANY_PALETTES.length];
+  }
+
+  function sortWorkRecords(records) {
+    return records.slice().sort((left, right) => {
+      const orderDiff = getStatusOrder(left) - getStatusOrder(right);
+      if (orderDiff !== 0) {
+        return orderDiff;
+      }
+      const leftDate = new Date(getTargetDate(left) || 0).getTime();
+      const rightDate = new Date(getTargetDate(right) || 0).getTime();
+      if (leftDate !== rightDate) {
+        return leftDate - rightDate;
+      }
+      return (left.tcrm_name || "").localeCompare(right.tcrm_name || "");
+    });
+  }
+
+  function buildCompanyGroups(records) {
+    const grouped = new Map();
+
+    records.forEach((record) => {
+      const key = getCompanyKey(record);
+      const name = getCompanyName(record);
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          id: key,
+          name,
+          records: [],
+          clientNames: new Set(),
+        });
+      }
+      const group = grouped.get(key);
+      group.records.push(record);
+      const clientName = getClientName(record);
+      if (clientName && clientName !== "No client") {
+        group.clientNames.add(clientName);
+      }
+    });
+
+    return Array.from(grouped.values())
+      .map((group) => {
+        const recordsForGroup = sortWorkRecords(group.records);
+        const activeCount = recordsForGroup.filter(
+          (item) => !isCompletedStatusValue(item.tcrm_status)
+        ).length;
+        const completedCount = recordsForGroup.length - activeCount;
+        const dueSoonCount = recordsForGroup.filter(isDueSoon).length;
+        const overdueCount = recordsForGroup.filter(isOverdue).length;
+        const nextRecord = recordsForGroup.find((item) => Boolean(getTargetDate(item)));
+
+        return {
+          id: group.id,
+          name: group.name,
+          records: recordsForGroup,
+          activeCount,
+          completedCount,
+          dueSoonCount,
+          overdueCount,
+          totalCount: recordsForGroup.length,
+          clientCount: group.clientNames.size,
+          nextTargetDate: nextRecord ? getTargetDate(nextRecord) : "",
+          palette: getPaletteFromSeed(group.name),
+        };
+      })
+      .sort((left, right) => {
+        if (left.activeCount !== right.activeCount) {
+          return right.activeCount - left.activeCount;
+        }
+        if (left.totalCount !== right.totalCount) {
+          return right.totalCount - left.totalCount;
+        }
+        return left.name.localeCompare(right.name);
+      });
+  }
+
+  function getStatusFilterLabel(value) {
+    const option = STATUS_FILTER_OPTIONS.find((item) => item.value === value);
+    return option ? option.label : "Active";
+  }
+
   function getStatusOrder(item) {
     const label = normalizeLabel(getStatusLabel(item));
     return STATUS_ORDER[label] || 99;
@@ -386,7 +762,453 @@
       props.actions
         ? h("div", { className: "field-label-row" }, label, props.actions)
         : label,
-      props.children
+      props.children,
+      props.hint ? h("p", { className: "field-hint" }, props.hint) : null
+    );
+  }
+
+  function FilterChip(props) {
+    return h(
+      "button",
+      {
+        type: "button",
+        className: `filter-chip${props.active ? " active" : ""}`,
+        onClick: props.onClick,
+        disabled: props.disabled,
+      },
+      props.label
+    );
+  }
+
+  function MetricCard(props) {
+    return h(
+      "div",
+      { className: `metric-card ${props.tone || "neutral"}` },
+      h("span", { className: "metric-label" }, props.label),
+      h("strong", { className: "metric-value" }, String(props.value))
+    );
+  }
+
+  function AppIcon(props) {
+    let iconChildren = null;
+
+    switch (props.name) {
+      case "company":
+        iconChildren = [
+          h("path", {
+            key: "outline",
+            d: "M5 20V8l7-3 7 3v12",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+          }),
+          h("path", {
+            key: "base",
+            d: "M3 20h18",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+            strokeLinecap: "round",
+          }),
+          h("path", {
+            key: "windows",
+            d: "M9 11h1M14 11h1M9 15h1M14 15h1",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+            strokeLinecap: "round",
+          }),
+        ];
+        break;
+      case "client":
+        iconChildren = [
+          h("path", {
+            key: "head",
+            d: "M12 12a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+          }),
+          h("path", {
+            key: "body",
+            d: "M5.5 20a6.5 6.5 0 0 1 13 0",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+            strokeLinecap: "round",
+          }),
+        ];
+        break;
+      case "notes":
+        iconChildren = [
+          h("path", {
+            key: "sheet",
+            d: "M8 4h6l4 4v12H8z",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+          }),
+          h("path", {
+            key: "fold",
+            d: "M14 4v4h4",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+          }),
+          h("path", {
+            key: "lines",
+            d: "M10 12h6M10 16h6",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+            strokeLinecap: "round",
+          }),
+        ];
+        break;
+      case "status":
+        iconChildren = [
+          h("circle", {
+            key: "dot-a",
+            cx: 8,
+            cy: 7,
+            r: 2,
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+          }),
+          h("circle", {
+            key: "dot-b",
+            cx: 16,
+            cy: 12,
+            r: 2,
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+          }),
+          h("circle", {
+            key: "dot-c",
+            cx: 8,
+            cy: 17,
+            r: 2,
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+          }),
+          h("path", {
+            key: "links",
+            d: "M10 8.2l4 2.5M10 15.8l4-2.5",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+            strokeLinecap: "round",
+          }),
+        ];
+        break;
+      case "clock":
+        iconChildren = [
+          h("circle", {
+            key: "dial",
+            cx: 12,
+            cy: 12,
+            r: 8,
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+          }),
+          h("path", {
+            key: "hands",
+            d: "M12 8v4l3 2",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+          }),
+        ];
+        break;
+      case "spark":
+      default:
+        iconChildren = [
+          h("path", {
+            key: "star",
+            d: "m12 4 1.9 4.6L18.5 10l-4.6 1.4L12 16l-1.9-4.6L5.5 10l4.6-1.4Z",
+            fill: "none",
+            stroke: "currentColor",
+            strokeWidth: 1.8,
+            strokeLinecap: "round",
+            strokeLinejoin: "round",
+          }),
+        ];
+        break;
+    }
+
+    return h(
+      "span",
+      { className: `app-icon${props.small ? " small" : ""}${props.className ? ` ${props.className}` : ""}` },
+      h(
+        "svg",
+        {
+          viewBox: "0 0 24 24",
+          "aria-hidden": "true",
+          focusable: "false",
+        },
+        iconChildren
+      )
+    );
+  }
+
+  function HeroScene(props) {
+    const group = props.group;
+    return h(
+      "div",
+      { className: "hero-visual", "aria-hidden": "true" },
+      h("div", { className: "hero-visual-glow" }),
+      h(
+        "div",
+        { className: "scene-card scene-card-primary" },
+        h(
+          "div",
+          { className: "scene-icon-stack" },
+          h(AppIcon, { name: "company" }),
+          h(AppIcon, { name: "clock", className: "accent" })
+        ),
+        h("span", { className: "scene-eyebrow" }, "Modern Time Management"),
+        h(
+          "strong",
+          { className: "scene-title" },
+          group ? group.name : "Company-first workboard"
+        ),
+        h(
+          "p",
+          { className: "scene-copy" },
+          group
+            ? `${group.totalCount} CRM record${group.totalCount === 1 ? "" : "s"} grouped into one clean lane with inline status updates.`
+            : "Left side stays focused on companies. Right side expands into active work, filters, notes and editor."
+        )
+      ),
+      h(
+        "div",
+        { className: "scene-strip" },
+        h(
+          "div",
+          { className: "scene-mini-card" },
+          h(AppIcon, { name: "status", small: true }),
+          h(
+            "div",
+            null,
+            h("span", { className: "scene-mini-label" }, "Status view"),
+            h(
+              "strong",
+              null,
+              `${getStatusFilterLabel(props.statusFilter)} filter`
+            )
+          )
+        ),
+        h(
+          "div",
+          { className: "scene-mini-card" },
+          h(AppIcon, { name: "notes", small: true }),
+          h(
+            "div",
+            null,
+            h("span", { className: "scene-mini-label" }, "Notes board"),
+            h(
+              "strong",
+              null,
+              group ? `${group.dueSoonCount} due soon` : "Inline editing"
+            )
+          )
+        )
+      )
+    );
+  }
+
+  function CompanyCard(props) {
+    const group = props.group;
+    const palette = group.palette;
+    return h(
+      "button",
+      {
+        type: "button",
+        className: `company-card${props.selected ? " active" : ""}`,
+        onClick: props.onSelect,
+        style: {
+          "--company-primary": palette.primary,
+          "--company-secondary": palette.secondary,
+          "--company-glow": palette.glow,
+          "--company-ink": palette.ink,
+        },
+      },
+      h(
+        "div",
+        { className: "company-card-top" },
+        h(
+          "div",
+          { className: "company-avatar" },
+          h("span", null, getInitials(group.name))
+        ),
+        h(
+          "div",
+          { className: "company-copy" },
+          h("span", { className: "company-name" }, group.name),
+          h(
+            "span",
+            { className: "company-meta" },
+            `${group.totalCount} work${group.totalCount === 1 ? "" : "s"}`
+          )
+        ),
+        group.overdueCount
+          ? h(
+              "span",
+              { className: "company-badge danger" },
+              `${group.overdueCount} overdue`
+            )
+          : h(
+              "span",
+              { className: "company-badge" },
+              `${group.activeCount} active`
+            )
+      ),
+      h(
+        "div",
+        { className: "company-progress" },
+        h("span", {
+          style: {
+            width: `${
+              group.totalCount
+                ? Math.round((group.completedCount / group.totalCount) * 100)
+                : 0
+            }%`,
+          },
+        })
+      ),
+      h(
+        "div",
+        { className: "company-stats" },
+        h("span", null, `${group.activeCount} active`),
+        h("span", null, `${group.completedCount} completed`),
+        h("span", null, `${group.clientCount} clients`)
+      ),
+      h(
+        "div",
+        { className: "company-footer" },
+        h(
+          "span",
+          null,
+          group.nextTargetDate
+            ? `Next ${formatShortDate(group.nextTargetDate)}`
+            : "No ETA planned"
+        ),
+        h(
+          "span",
+          { className: "company-footer-marker" },
+          group.dueSoonCount ? `${group.dueSoonCount} due soon` : "Ready"
+        )
+      )
+    );
+  }
+
+  function WorkCard(props) {
+    const item = props.item;
+    const statusLabel = getStatusLabel(item);
+    const priorityLabel = getPriorityLabel(item);
+    const typeLabel = getTypeLabel(item);
+    const due = getDueDescriptor(item);
+    return h(
+      "article",
+      { className: `work-card${props.selected ? " active" : ""}` },
+      h(
+        "button",
+        {
+          type: "button",
+          className: "work-card-hit",
+          onClick: props.onSelect,
+          disabled: props.disabled,
+        },
+        h(
+          "span",
+          { className: `work-radio${props.selected ? " checked" : ""}` },
+          props.selected ? h("span", { className: "work-radio-dot" }) : null
+        ),
+        h(
+          "div",
+          { className: "work-main" },
+          h(
+            "div",
+            { className: "work-head" },
+            h(
+              "div",
+              { className: "work-title-stack" },
+              h(
+                "strong",
+                { className: "work-title" },
+                item.tcrm_name || "Untitled work"
+              ),
+              h(
+                "span",
+                { className: "work-subtitle" },
+                `${getClientName(item)} / ${typeLabel}`
+              )
+            ),
+            h("span", { className: `due-pill ${due.tone}` }, due.label)
+          ),
+          h(
+            "p",
+            { className: "work-description" },
+            getDescriptionPreview(item.tcrm_description, 110)
+          ),
+          h(
+            "div",
+            { className: "work-meta" },
+            h(
+              "span",
+              { className: `pill status ${toClassName(statusLabel)}` },
+              statusLabel
+            ),
+            h(
+              "span",
+              { className: `pill priority ${toClassName(priorityLabel)}` },
+              priorityLabel
+            ),
+            h(
+              "span",
+              { className: "meta-chip" },
+              `${countNotesInDescription(item.tcrm_description)} notes`
+            ),
+            h(
+              "span",
+              { className: "meta-chip" },
+              `ETA ${formatShortDate(item.tcrm_eta || item.tcrm_enddate) || "Not set"}`
+            )
+          )
+        )
+      ),
+      h(
+        "div",
+        { className: "work-card-actions" },
+        h("span", { className: "inline-label" }, "Quick status"),
+        h(
+          "select",
+          {
+            className: "inline-status-select",
+            value: String(item.tcrm_status || ""),
+            onChange: (event) => props.onQuickStatusChange(event.target.value),
+            disabled: props.disabled || props.quickSaving,
+          },
+          STATUS_OPTIONS.map((option) =>
+            h("option", { key: option.value, value: option.value }, option.label)
+          )
+        ),
+        props.quickSaving
+          ? h("span", { className: "saving-indicator" }, "Saving...")
+          : null
+      )
     );
   }
 
@@ -403,16 +1225,27 @@
     const [workSchedules, setWorkSchedules] = useState([]);
     const [form, setForm] = useState(DEFAULT_FORM);
     const [notes, setNotes] = useState([createEmptyNote()]);
+    const [activeNoteId, setActiveNoteId] = useState(null);
+    const [draggingNoteId, setDraggingNoteId] = useState(null);
+    const [dragOverNoteId, setDragOverNoteId] = useState(null);
     const [alert, setAlert] = useState(null);
     const [lookupSchema, setLookupSchema] = useState(DEFAULT_LOOKUP_SCHEMA);
-    const [dateRange, setDateRange] = useState("today");
+    const [dateRange, setDateRange] = useState("all");
     const [customFrom, setCustomFrom] = useState("");
     const [customTo, setCustomTo] = useState("");
     const [typeFilter, setTypeFilter] = useState("all");
+    const [statusFilter, setStatusFilter] = useState("active");
+    const [companySearch, setCompanySearch] = useState("");
+    const [workSearch, setWorkSearch] = useState("");
+    const [selectedCompanyId, setSelectedCompanyId] = useState(null);
     const [panelMode, setPanelMode] = useState("empty");
     const [selectedId, setSelectedId] = useState(null);
     const [selectedRecord, setSelectedRecord] = useState(null);
+    const [quickSavingId, setQuickSavingId] = useState(null);
     const [scheduleOpen, setScheduleOpen] = useState(false);
+    const noteEditorRefs = useRef({});
+    const noteRowRefs = useRef({});
+    const noteSelectionRef = useRef({ noteId: null, range: null });
     const [loading, setLoading] = useState({
       companies: false,
       clients: false,
@@ -431,6 +1264,7 @@
 
       loadEntitySets();
       loadCompanies();
+      loadClients("");
     }, [xrm]);
 
     useEffect(() => {
@@ -447,10 +1281,6 @@
 
     useEffect(() => {
       if (!xrm || !xrm.WebApi) {
-        return;
-      }
-      if (!form.companyId) {
-        setClients([]);
         return;
       }
       loadClients(form.companyId);
@@ -475,10 +1305,14 @@
 
     useEffect(() => {
       if (!scheduleOpen) {
+        setActiveNoteId(null);
+        noteSelectionRef.current = { noteId: null, range: null };
         return;
       }
       const parsed = parseNotesFromDescription(form.description);
-      setNotes(parsed.length ? parsed : [createEmptyNote()]);
+      const nextNotes = parsed.length ? parsed : [createEmptyNote()];
+      setNotes(nextNotes);
+      setActiveNoteId(nextNotes[0] ? nextNotes[0].id : null);
     }, [scheduleOpen, selectedId]);
 
     useEffect(() => {
@@ -497,11 +1331,33 @@
       }
       const frame = window.requestAnimationFrame(() => {
         document
-          .querySelectorAll(".note-input")
+          .querySelectorAll("textarea.note-input")
           .forEach((node) => autoResizeTextarea(node));
       });
       return () => window.cancelAnimationFrame(frame);
     }, [notes, scheduleOpen]);
+
+    useEffect(() => {
+      if (!scheduleOpen) {
+        return;
+      }
+      notes.forEach((note) => {
+        const editor = noteEditorRefs.current[note.id];
+        if (!editor) {
+          return;
+        }
+        const desiredHtml = note.text || "";
+        if (editor.innerHTML === desiredHtml) {
+          return;
+        }
+        const isFocused = document.activeElement === editor;
+        const isActive = activeNoteId === note.id;
+        if (isFocused && isActive) {
+          return;
+        }
+        editor.innerHTML = desiredHtml;
+      });
+    }, [notes, scheduleOpen, activeNoteId]);
 
     useEffect(() => {
       if (!scheduleOpen) {
@@ -543,7 +1399,10 @@
 
     function resetNotesFromDescription(description) {
       const parsed = parseNotesFromDescription(description);
-      setNotes(parsed.length ? parsed : [createEmptyNote()]);
+      const nextNotes = parsed.length ? parsed : [createEmptyNote()];
+      setNotes(nextNotes);
+      setActiveNoteId(nextNotes[0] ? nextNotes[0].id : null);
+      noteSelectionRef.current = { noteId: null, range: null };
     }
 
     function handleRangeChange(event) {
@@ -579,6 +1438,7 @@
     }
 
     function handleSelectRecord(record) {
+      setSelectedCompanyId(getCompanyKey(record));
       setSelectedId(record.tcrm_workscheduleid);
       setSelectedRecord(record);
       setPanelMode("edit");
@@ -592,7 +1452,13 @@
       setPanelMode("create");
       setSelectedId(null);
       setSelectedRecord(null);
-      setForm(DEFAULT_FORM);
+      setForm({
+        ...DEFAULT_FORM,
+        companyId:
+          selectedCompanyId && selectedCompanyId !== UNASSIGNED_COMPANY_ID
+            ? selectedCompanyId
+            : "",
+      });
       resetNotesFromDescription("");
       setAlert(null);
       setScheduleOpen(false);
@@ -604,16 +1470,202 @@
 
     function handleScheduleClose() {
       setScheduleOpen(false);
+      setDraggingNoteId(null);
+      setDragOverNoteId(null);
     }
 
-    function handleNoteTextChange(noteId, event) {
-      const value = event.target.value;
-      autoResizeTextarea(event.target);
+    function setNoteEditorRef(noteId, node) {
+      if (node) {
+        noteEditorRefs.current[noteId] = node;
+        return;
+      }
+      delete noteEditorRefs.current[noteId];
+    }
+
+    function setNoteRowRef(noteId, node) {
+      if (node) {
+        noteRowRefs.current[noteId] = node;
+        return;
+      }
+      delete noteRowRefs.current[noteId];
+    }
+
+    function scrollNoteIntoView(noteId) {
+      const row = noteRowRefs.current[noteId];
+      if (!row || !row.scrollIntoView) {
+        return;
+      }
+      row.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+
+    function storeNoteSelection(noteId) {
+      const editor = noteEditorRefs.current[noteId];
+      if (!editor) {
+        return;
+      }
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) {
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      if (!editor.contains(range.startContainer)) {
+        return;
+      }
+      noteSelectionRef.current = { noteId, range: range.cloneRange() };
+    }
+
+    function placeCaretAtEnd(node) {
+      if (!node) {
+        return;
+      }
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      range.collapse(false);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+
+    function restoreNoteSelection(noteId) {
+      const editor = noteEditorRefs.current[noteId];
+      if (!editor) {
+        return;
+      }
+      const selection = window.getSelection();
+      const stored = noteSelectionRef.current;
+      if (stored && stored.noteId === noteId && stored.range) {
+        try {
+          selection.removeAllRanges();
+          selection.addRange(stored.range);
+          return;
+        } catch (error) {
+          // Fallback to placing cursor at the end of the note.
+        }
+      }
+      placeCaretAtEnd(editor);
+    }
+
+    function withActiveNoteEditor(action) {
+      const noteId =
+        activeNoteId ||
+        (noteSelectionRef.current ? noteSelectionRef.current.noteId : null);
+      if (!noteId) {
+        return;
+      }
+      const editor = noteEditorRefs.current[noteId];
+      if (!editor) {
+        return;
+      }
+      editor.focus();
+      restoreNoteSelection(noteId);
+      action(editor, noteId);
+      const html = editor.innerHTML;
       setNotes((prev) =>
         prev.map((note) =>
-          note.id === noteId ? { ...note, text: value } : note
+          note.id === noteId ? { ...note, text: html } : note
         )
       );
+      storeNoteSelection(noteId);
+      scrollNoteIntoView(noteId);
+    }
+
+    function handleNoteInput(noteId, event) {
+      const html = event.currentTarget.innerHTML;
+      setActiveNoteId(noteId);
+      setNotes((prev) =>
+        prev.map((note) =>
+          note.id === noteId ? { ...note, text: html } : note
+        )
+      );
+      storeNoteSelection(noteId);
+      window.requestAnimationFrame(() => scrollNoteIntoView(noteId));
+    }
+
+    function handleNoteFocus(noteId) {
+      setActiveNoteId(noteId);
+      storeNoteSelection(noteId);
+      scrollNoteIntoView(noteId);
+    }
+
+    function handleNoteSelectionChange(noteId) {
+      setActiveNoteId(noteId);
+      storeNoteSelection(noteId);
+    }
+
+    function handleInsertTimestamp() {
+      const timestamp = formatDateTime(Date.now());
+      const safeTimestamp = escapeHtml(timestamp);
+      withActiveNoteEditor(() => {
+        insertHtmlAtCursor(
+          `<span class="timestamp-line">${safeTimestamp}</span>&nbsp;`
+        );
+      });
+    }
+
+    function handleApplyColor(color) {
+      if (!color) {
+        return;
+      }
+      withActiveNoteEditor(() => {
+        document.execCommand("styleWithCSS", false, true);
+        document.execCommand("foreColor", false, color);
+      });
+    }
+
+    function reorderNotesById(list, fromId, toId, insertAfter) {
+      const fromIndex = list.findIndex((note) => note.id === fromId);
+      const toIndex = list.findIndex((note) => note.id === toId);
+      if (fromIndex === -1 || toIndex === -1) {
+        return list;
+      }
+      if (fromIndex === toIndex) {
+        return list;
+      }
+      const targetIndex = insertAfter ? toIndex + 1 : toIndex;
+      const next = list.slice();
+      const [moved] = next.splice(fromIndex, 1);
+      const insertIndex =
+        fromIndex < targetIndex ? targetIndex - 1 : targetIndex;
+      next.splice(insertIndex, 0, moved);
+      return next;
+    }
+
+    function handleDragStart(noteId, event) {
+      setDraggingNoteId(noteId);
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", noteId);
+    }
+
+    function handleDragOver(noteId, event) {
+      if (!draggingNoteId || draggingNoteId === noteId) {
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      if (dragOverNoteId !== noteId) {
+        setDragOverNoteId(noteId);
+      }
+    }
+
+    function handleDrop(noteId, event) {
+      event.preventDefault();
+      if (!draggingNoteId || draggingNoteId === noteId) {
+        setDragOverNoteId(null);
+        return;
+      }
+      const target = event.currentTarget;
+      const rect = target.getBoundingClientRect();
+      const insertAfter = event.clientY - rect.top > rect.height / 2;
+      setNotes((prev) =>
+        reorderNotesById(prev, draggingNoteId, noteId, insertAfter)
+      );
+      setDragOverNoteId(null);
+      setDraggingNoteId(null);
+    }
+
+    function handleDragEnd() {
+      setDraggingNoteId(null);
+      setDragOverNoteId(null);
     }
 
     function handleNoteStatusChange(noteId, event) {
@@ -626,16 +1678,53 @@
     }
 
     function handleAddNote() {
-      setNotes((prev) => prev.concat(createEmptyNote()));
+      const newNote = createEmptyNote();
+      setNotes((prev) => prev.concat(newNote));
+      setActiveNoteId(newNote.id);
+      window.setTimeout(() => {
+        const editor = noteEditorRefs.current[newNote.id];
+        if (editor) {
+          editor.focus();
+          scrollNoteIntoView(newNote.id);
+        }
+      }, 0);
     }
 
     function handleRemoveNote(noteId) {
       setNotes((prev) => {
+        let next = prev;
         if (prev.length <= 1) {
-          return [createEmptyNote()];
+          const replacement = createEmptyNote();
+          next = [replacement];
+          setActiveNoteId(replacement.id);
+        } else {
+          next = prev.filter((note) => note.id !== noteId);
+          if (noteId === activeNoteId) {
+            setActiveNoteId(next[0] ? next[0].id : null);
+          }
         }
-        return prev.filter((note) => note.id !== noteId);
+        if (noteSelectionRef.current.noteId === noteId) {
+          noteSelectionRef.current = { noteId: null, range: null };
+        }
+        return next;
       });
+    }
+
+    async function retrieveAllRecords(entityName, query) {
+      const result = await xrm.WebApi.retrieveMultipleRecords(entityName, query);
+      const entities = [].concat(result.entities || []);
+      let nextLink = result.nextLink;
+
+      while (nextLink) {
+        const nextResult = await xrm.WebApi.retrieveMultipleRecords(
+          entityName,
+          nextLink
+        );
+        entities.push(...(nextResult.entities || []));
+        nextLink = nextResult.nextLink;
+      }
+
+      return entities;
     }
 
     async function loadEntitySets() {
@@ -691,14 +1780,12 @@
           "?$select=tcrm_companyid,tcrm_name&$filter=" +
           encodeURIComponent("statecode eq 0") +
           "&$orderby=tcrm_name asc";
-        const result = await xrm.WebApi.retrieveMultipleRecords(
-          "tcrm_company",
-          query
+        const items = (await retrieveAllRecords("tcrm_company", query)).map(
+          (item) => ({
+            id: normalizeGuid(item.tcrm_companyid),
+            name: item.tcrm_name || "(No name)",
+          })
         );
-        const items = (result.entities || []).map((item) => ({
-          id: normalizeGuid(item.tcrm_companyid),
-          name: item.tcrm_name || "(No name)",
-        }));
         setCompanies(items);
       } catch (error) {
         setAlert({
@@ -721,14 +1808,12 @@
           "?$select=tcrm_clientid,tcrm_name,_tcrm_client_value&$filter=" +
           encodeURIComponent(filterParts.join(" and ")) +
           "&$orderby=tcrm_name asc";
-        const result = await xrm.WebApi.retrieveMultipleRecords(
-          "tcrm_client",
-          query
+        const items = (await retrieveAllRecords("tcrm_client", query)).map(
+          (item) => ({
+            id: normalizeGuid(item.tcrm_clientid),
+            name: item.tcrm_name || "(No name)",
+          })
         );
-        const items = (result.entities || []).map((item) => ({
-          id: normalizeGuid(item.tcrm_clientid),
-          name: item.tcrm_name || "(No name)",
-        }));
         setClients(items);
       } catch (error) {
         setAlert({
@@ -753,32 +1838,16 @@
         if (typeFilterValue && typeFilterValue !== "all") {
           filterParts.push(`tcrm_type eq ${Number(typeFilterValue)}`);
         }
-        if (rangeKey === "today") {
-          const range = getDateRange(rangeKey);
-          if (range.start && range.end) {
-            const rangeStartIso = toIso(range.start);
-            const rangeEndIso = toIso(range.end);
-            // Include records where today falls between start and end (inclusive).
-            filterParts.push(`tcrm_startdate le ${rangeEndIso}`);
-            filterParts.push(`tcrm_enddate ge ${rangeStartIso}`);
-          }
-        } else if (rangeKey === "custom") {
-          const customStart = parseLocalDate(customFromValue);
-          const customEnd = parseLocalDate(customToValue);
-          if (customStart && customEnd) {
-            const start =
-              customStart.getTime() <= customEnd.getTime()
-                ? customStart
-                : customEnd;
-            const end =
-              customStart.getTime() <= customEnd.getTime()
-                ? customEnd
-                : customStart;
-            const rangeStartIso = toIso(startOfDay(start));
-            const rangeEndIso = toIso(endOfDay(end));
-            filterParts.push(`tcrm_startdate ge ${rangeStartIso}`);
-            filterParts.push(`tcrm_enddate le ${rangeEndIso}`);
-          }
+        const range = getDateRange(
+          rangeKey,
+          customFromValue,
+          customToValue
+        );
+        if (range.start && range.end) {
+          const rangeStartIso = toIso(range.start);
+          const rangeEndIso = toIso(range.end);
+          filterParts.push(`(tcrm_startdate le ${rangeEndIso} or tcrm_startdate eq null)`);
+          filterParts.push(`(tcrm_enddate ge ${rangeStartIso} or tcrm_enddate eq null)`);
         }
         const query =
           "?$select=tcrm_workscheduleid,tcrm_name,tcrm_status,tcrm_priorityority," +
@@ -786,12 +1855,9 @@
           "_tcrm_company_value,_tcrm_client_value" +
           "&$filter=" +
           encodeURIComponent(filterParts.join(" and ")) +
-          "&$orderby=createdon desc&$top=50";
-        const result = await xrm.WebApi.retrieveMultipleRecords(
-          "tcrm_workschedule",
-          query
-        );
-        setWorkSchedules(result.entities || []);
+          "&$orderby=createdon desc&$top=250";
+        const records = await retrieveAllRecords("tcrm_workschedule", query);
+        setWorkSchedules(records || []);
       } catch (error) {
         setAlert({
           type: "error",
@@ -813,7 +1879,15 @@
       });
     }
 
-    function buildPayload() {
+    function buildFallbackName() {
+      const selectedCompany = companies.find(
+        (company) => company.id === normalizeGuid(form.companyId)
+      );
+      const companyLabel = selectedCompany ? selectedCompany.name : "Work";
+      return `${companyLabel} task ${new Date().toLocaleDateString()}`;
+    }
+
+    function buildPayload(mode = "update") {
       const payload = {};
       const name = form.name.trim();
       const description = (form.description || "").trim();
@@ -821,27 +1895,37 @@
 
       if (name) {
         payload.tcrm_name = name;
+      } else if (mode === "create") {
+        payload.tcrm_name = buildFallbackName();
       }
       if (descriptionText) {
         payload.tcrm_description = description;
+      } else if (mode === "update") {
+        payload.tcrm_description = null;
       }
       if (form.startDate) {
         const iso = toIso(form.startDate);
         if (iso) {
           payload.tcrm_startdate = iso;
         }
+      } else if (mode === "update") {
+        payload.tcrm_startdate = null;
       }
       if (form.endDate) {
         const iso = toIso(form.endDate);
         if (iso) {
           payload.tcrm_enddate = iso;
         }
+      } else if (mode === "update") {
+        payload.tcrm_enddate = null;
       }
       if (form.eta) {
         const iso = toIso(form.eta);
         if (iso) {
           payload.tcrm_eta = iso;
         }
+      } else if (mode === "update") {
+        payload.tcrm_eta = null;
       }
       if (form.priority) {
         payload.tcrm_priorityority = Number(form.priority);
@@ -866,6 +1950,22 @@
       return payload;
     }
 
+    function applyRecordPatch(recordId, patch) {
+      setWorkSchedules((prev) =>
+        prev.map((item) =>
+          item.tcrm_workscheduleid === recordId ? { ...item, ...patch } : item
+        )
+      );
+      setSelectedRecord((prev) =>
+        prev && prev.tcrm_workscheduleid === recordId
+          ? { ...prev, ...patch }
+          : prev
+      );
+      if (selectedId === recordId && patch.tcrm_status !== undefined) {
+        setForm((prev) => ({ ...prev, status: String(patch.tcrm_status) }));
+      }
+    }
+
     async function handleCreate(event) {
       event.preventDefault();
       setAlert(null);
@@ -877,34 +1977,17 @@
         });
         return;
       }
-      if (!form.name.trim()) {
-        setAlert({ type: "error", text: "Name is required." });
-        return;
-      }
-      if (!form.companyId) {
-        setAlert({ type: "error", text: "Company is required." });
-        return;
-      }
-      if (!form.clientId) {
-        setAlert({ type: "error", text: "Client is required." });
-        return;
-      }
 
       setLoading((prev) => ({ ...prev, saving: true }));
       try {
-        const payload = buildPayload();
-        await xrm.WebApi.createRecord("tcrm_workschedule", payload);
+        const payload = buildPayload("create");
+        const result = await xrm.WebApi.createRecord("tcrm_workschedule", payload);
         setAlert({ type: "success", text: "Work schedule created." });
         await loadWorkSchedules();
-        setForm((prev) => ({
-          ...prev,
-          name: "",
-          description: "",
-          startDate: "",
-          endDate: "",
-          eta: "",
-        }));
-        resetNotesFromDescription("");
+        if (result && result.id) {
+          setSelectedId(normalizeGuid(result.id));
+        }
+        setPanelMode("empty");
       } catch (error) {
         setAlert({
           type: "error",
@@ -930,22 +2013,10 @@
         setAlert({ type: "error", text: "Select a work schedule to update." });
         return;
       }
-      if (!form.name.trim()) {
-        setAlert({ type: "error", text: "Name is required." });
-        return;
-      }
-      if (!form.companyId) {
-        setAlert({ type: "error", text: "Company is required." });
-        return;
-      }
-      if (!form.clientId) {
-        setAlert({ type: "error", text: "Client is required." });
-        return;
-      }
 
       setLoading((prev) => ({ ...prev, saving: true }));
       try {
-        const payload = buildPayload();
+        const payload = buildPayload("update");
         await xrm.WebApi.updateRecord(
           "tcrm_workschedule",
           selectedId,
@@ -962,14 +2033,52 @@
         setLoading((prev) => ({ ...prev, saving: false }));
       }
     }
-    const companyOptions = companies.map((company) =>
-      h("option", { key: company.id, value: company.id }, company.name)
+
+    async function handleQuickStatusUpdate(record, value) {
+      if (!record || !value || String(record.tcrm_status) === String(value)) {
+        return;
+      }
+      if (!xrm || !xrm.WebApi) {
+        return;
+      }
+      setQuickSavingId(record.tcrm_workscheduleid);
+      try {
+        await xrm.WebApi.updateRecord("tcrm_workschedule", record.tcrm_workscheduleid, {
+          tcrm_status: Number(value),
+        });
+        applyRecordPatch(record.tcrm_workscheduleid, {
+          tcrm_status: Number(value),
+        });
+        setAlert({
+          type: "success",
+          text: `Status updated for ${record.tcrm_name || "work item"}.`,
+        });
+      } catch (error) {
+        setAlert({
+          type: "error",
+          text: `Failed to update status. ${getErrorMessage(error)}`,
+        });
+      } finally {
+        setQuickSavingId(null);
+      }
+    }
+
+    const companyOptions = [
+      h("option", { key: "company-empty", value: "" }, "No company"),
+    ].concat(
+      companies.map((company) =>
+        h("option", { key: company.id, value: company.id }, company.name)
+      )
     );
-    const clientOptions = clients.map((client) =>
-      h("option", { key: client.id, value: client.id }, client.name)
+    const clientOptions = [
+      h("option", { key: "client-empty", value: "" }, "No client"),
+    ].concat(
+      clients.map((client) =>
+        h("option", { key: client.id, value: client.id }, client.name)
+      )
     );
     const typeFilterOptions = [
-      h("option", { key: "type-all", value: "all" }, "All types"),
+      h("option", { key: "type-all", value: "all" }, "All work types"),
     ].concat(
       TYPE_OPTIONS.map((option) =>
         h("option", { key: option.value, value: option.value }, option.label)
@@ -979,54 +2088,54 @@
     const companyPlaceholder = loading.companies
       ? "Loading companies..."
       : companies.length
-      ? "Select company"
+      ? "No company"
       : "No active companies";
 
     const clientPlaceholder = !form.companyId
-      ? "Select company first"
+      ? "No client"
       : loading.clients
       ? "Loading clients..."
       : clients.length
       ? "Select client"
       : "No active clients for this company";
 
-    const rangeLabel = (() => {
-      if (dateRange === "custom") {
-        if (customFrom && customTo) {
-          const fromLabel = formatDateInputLabel(customFrom) || customFrom;
-          const toLabel = formatDateInputLabel(customTo) || customTo;
-          return `Custom: ${fromLabel} - ${toLabel}`;
-        }
-        return "Custom: Select dates";
+    const rangeLabel = getDateRange(dateRange, customFrom, customTo).label;
+    const groupedCompanies = buildCompanyGroups(workSchedules);
+    const searchableCompanies = groupedCompanies.filter((group) =>
+      group.name.toLowerCase().includes(companySearch.trim().toLowerCase())
+    );
+    const visibleCompanies = companySearch.trim()
+      ? searchableCompanies
+      : groupedCompanies;
+    const selectedCompanyGroup =
+      visibleCompanies.find((group) => group.id === selectedCompanyId) || null;
+    const companyRecords = selectedCompanyGroup ? selectedCompanyGroup.records : [];
+    const visibleCompanyRecords = companyRecords.filter((item) => {
+      if (!matchesStatusFilter(item, statusFilter)) {
+        return false;
       }
-      return (
-        DATE_RANGE_OPTIONS.find((option) => option.value === dateRange)?.label ||
-        "Range"
-      );
-    })();
-
-    const sortedWorkSchedules = workSchedules.slice().sort((a, b) => {
-      const orderDiff = getStatusOrder(a) - getStatusOrder(b);
-      if (orderDiff !== 0) {
-        return orderDiff;
+      const searchValue = workSearch.trim().toLowerCase();
+      if (!searchValue) {
+        return true;
       }
-      const endA = new Date(a.tcrm_enddate || 0).getTime();
-      const endB = new Date(b.tcrm_enddate || 0).getTime();
-      if (endA !== endB) {
-        return endA - endB;
-      }
-      return (a.tcrm_name || "").localeCompare(b.tcrm_name || "");
+      const haystack = [
+        item.tcrm_name || "",
+        getClientName(item),
+        getDescriptionPreview(item.tcrm_description, 200),
+        getTypeLabel(item),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(searchValue);
     });
-
     const listCountLabel =
-      sortedWorkSchedules.length === 1
-        ? "1 item"
-        : `${sortedWorkSchedules.length} items`;
+      visibleCompanyRecords.length === 1
+        ? "1 work item"
+        : `${visibleCompanyRecords.length} work items`;
 
     const isCreateMode = panelMode === "create";
     const isEditMode = panelMode === "edit";
     const canShowForm = isCreateMode || (isEditMode && selectedId);
-    const showEyebrow = !isCreateMode && !isEditMode;
     const formId = "work-form";
     const scheduleDialogId = "schedule-dialog";
     const scheduleDialogTitleId = "schedule-dialog-title";
@@ -1040,7 +2149,13 @@
 
     const handleFormReset = () => {
       if (isCreateMode) {
-        setForm(DEFAULT_FORM);
+        setForm({
+          ...DEFAULT_FORM,
+          companyId:
+            selectedCompanyId && selectedCompanyId !== UNASSIGNED_COMPANY_ID
+              ? selectedCompanyId
+              : "",
+        });
         resetNotesFromDescription("");
         return;
       }
@@ -1050,12 +2165,56 @@
       }
     };
 
+    useEffect(() => {
+      if (!visibleCompanies.length) {
+        setSelectedCompanyId(null);
+        return;
+      }
+      const stillExists = visibleCompanies.some(
+        (group) => group.id === selectedCompanyId
+      );
+      if (!stillExists) {
+        setSelectedCompanyId(visibleCompanies[0].id);
+      }
+    }, [selectedCompanyId, visibleCompanies]);
+
+    useEffect(() => {
+      if (panelMode === "create") {
+        return;
+      }
+      if (!visibleCompanyRecords.length) {
+        setSelectedId(null);
+        setSelectedRecord(null);
+        if (panelMode === "edit") {
+          setPanelMode("empty");
+        }
+        return;
+      }
+      const nextRecord =
+        visibleCompanyRecords.find(
+          (item) => item.tcrm_workscheduleid === selectedId
+        ) || visibleCompanyRecords[0];
+      if (!nextRecord) {
+        return;
+      }
+      if (!selectedRecord || selectedRecord.tcrm_workscheduleid !== nextRecord.tcrm_workscheduleid) {
+        setSelectedId(nextRecord.tcrm_workscheduleid);
+        setSelectedRecord(nextRecord);
+        setForm(buildFormFromRecord(nextRecord));
+        setPanelMode("edit");
+      }
+    }, [panelMode, selectedId, selectedRecord, visibleCompanyRecords]);
+
     const formFields = h(
       "div",
       { className: "form-grid" },
       h(
         Field,
-        { id: "name", label: "Name" },
+        {
+          id: "name",
+          label: "Work Name",
+          hint: "Optional. If left blank, a name is generated while saving.",
+        },
         h("input", {
           id: "name",
           name: "name",
@@ -1063,7 +2222,7 @@
           value: form.name,
           onChange: handleChange,
           disabled: !xrm || loading.saving,
-          required: true,
+          placeholder: "For example: Renewal follow-up",
         })
       ),
       h(
@@ -1077,7 +2236,6 @@
             value: form.companyId,
             onChange: handleChange,
             disabled: !xrm || loading.companies || loading.saving,
-            required: true,
           },
           [
             h(
@@ -1090,7 +2248,13 @@
       ),
       h(
         Field,
-        { id: "clientId", label: "Client" },
+        {
+          id: "clientId",
+          label: "Client",
+          hint: form.companyId
+            ? "Showing active clients under this company."
+            : "Showing all active clients.",
+        },
         h(
           "select",
           {
@@ -1098,9 +2262,7 @@
             name: "clientId",
             value: form.clientId,
             onChange: handleChange,
-            disabled:
-              !xrm || !form.companyId || loading.clients || loading.saving,
-            required: true,
+            disabled: !xrm || loading.clients || loading.saving,
           },
           [
             h(
@@ -1205,7 +2367,7 @@
         Field,
         {
           id: "schedule",
-          label: "Schedule",
+          label: "Notes Board",
           full: true,
         },
         h(
@@ -1219,314 +2381,431 @@
             "aria-haspopup": "dialog",
             "aria-controls": scheduleDialogId,
           },
-          "See Schedule"
+          "Open Notes Board"
         )
       )
     );
+
     return h(
       "div",
-      { className: "app" },
+      { className: "app modern-app" },
       h(
         "header",
-        { className: "app-header" },
-        h("h1", { className: "app-title" }, "To Do List")
-      ),
-      h(
-        "div",
-        { className: "workspace" },
+        { className: "app-header modern-header" },
         h(
-          "section",
-          { className: "panel list-panel" },
+          "div",
+          { className: "header-copy" },
+          h("p", { className: "eyebrow" }, "Time Management Solution"),
+          h("h1", { className: "app-title workboard-title" }, "Modern Workboard"),
           h(
-            "div",
-            { className: "panel-header list-header" },
-            h(
-              "div",
-              { className: "panel-actions" },
-              h(
-                "div",
-                { className: "filter-group" },
-                h(
-                  "select",
-                  {
-                    id: "dateRange",
-                    className: "filter-select",
-                    value: dateRange,
-                    onChange: handleRangeChange,
-                    disabled: !xrm || loading.workSchedules,
-                  },
-                  DATE_RANGE_OPTIONS.map((option) =>
-                    h(
-                      "option",
-                      { key: option.value, value: option.value },
-                      option.label
-                    )
-                  )
-                ),
-                h(
-                  "select",
-                  {
-                    id: "typeFilter",
-                    className: "filter-select",
-                    value: typeFilter,
-                    onChange: handleTypeFilterChange,
-                    disabled: !xrm || loading.workSchedules,
-                  },
-                  typeFilterOptions
-                )
-              ),
-              h(
-                "button",
-                {
-                  type: "button",
-                  className: `btn-ghost icon-button${
-                    loading.workSchedules ? " is-loading" : ""
-                  }`,
-                  onClick: () => loadWorkSchedules(),
-                  disabled: !xrm || loading.workSchedules,
-                  title: "Refresh",
-                  "aria-label": "Refresh list",
-                },
-                h("span", { className: "sr-only" }, "Refresh"),
-                h(
-                  "svg",
-                  {
-                    viewBox: "0 0 24 24",
-                    "aria-hidden": "true",
-                    focusable: "false",
-                  },
-                  h("path", {
-                    d: "M20 12a8 8 0 1 1-2.34-5.66",
-                    fill: "none",
-                    stroke: "currentColor",
-                    strokeWidth: 1.8,
-                    strokeLinecap: "round",
-                    strokeLinejoin: "round",
-                  }),
-                  h("polyline", {
-                    points: "20 4 20 10 14 10",
-                    fill: "none",
-                    stroke: "currentColor",
-                    strokeWidth: 1.8,
-                    strokeLinecap: "round",
-                    strokeLinejoin: "round",
-                  })
-                )
-              )
-            )
-          ),
-          dateRange === "custom"
-            ? h(
-                "div",
-                { className: "filter-dates" },
-                h(
-                  "div",
-                  { className: "filter-date" },
-                  h("label", { htmlFor: "fromDate" }, "From date"),
-                  h("input", {
-                    id: "fromDate",
-                    type: "date",
-                    value: customFrom,
-                    onChange: handleCustomFromChange,
-                    disabled: !xrm || loading.workSchedules,
-                    max: customTo || undefined,
-                  })
-                ),
-                h(
-                  "div",
-                  { className: "filter-date" },
-                  h("label", { htmlFor: "toDate" }, "To date"),
-                  h("input", {
-                    id: "toDate",
-                    type: "date",
-                    value: customTo,
-                    onChange: handleCustomToChange,
-                    disabled: !xrm || loading.workSchedules,
-                    min: customFrom || undefined,
-                  })
-                )
-              )
-            : null,
-          h(
-            "div",
-            { className: "range-meta" },
-            h("span", { className: "range-label" }, rangeLabel),
-            h("span", { className: "range-count" }, listCountLabel)
-          ),
-          h(
-            "div",
-            { className: "list" },
-            loading.workSchedules && sortedWorkSchedules.length === 0
-              ? h("div", { className: "empty" }, "Loading work schedules...")
-              : sortedWorkSchedules.length === 0
-              ? h(
-                  "div",
-                  { className: "empty" },
-                  "No work schedules in this range."
-                )
-              : sortedWorkSchedules.map((item) => {
-                  const companyName =
-                    getFormatted(item, "_tcrm_company_value") || "No company";
-                  const clientName =
-                    getFormatted(item, "_tcrm_client_value") || "No client";
-                  const statusLabel = getStatusLabel(item);
-                  const priorityLabel = getPriorityLabel(item);
-                  const statusClass = toClassName(statusLabel);
-                  const priorityClass = toClassName(priorityLabel);
-                  const isSelected =
-                    item.tcrm_workscheduleid === selectedId;
-
-                  const etaValue = formatShortDate(item.tcrm_eta);
-
-                  return h(
-                    "button",
-                    {
-                      key: item.tcrm_workscheduleid,
-                      type: "button",
-                      className: `list-item${isSelected ? " active" : ""}`,
-                      onClick: () => handleSelectRecord(item),
-                      disabled: !xrm || loading.saving,
-                    },
-                    h(
-                      "div",
-                      { className: "list-item-header" },
-                      h(
-                        "span",
-                        { className: "list-item-title" },
-                        item.tcrm_name || "(No name)"
-                      ),
-                      h(
-                        "span",
-                        { className: "list-item-date" },
-                        etaValue ? `ETA: ${etaValue}` : "ETA: Not set"
-                      )
-                    ),
-                    h(
-                      "div",
-                      { className: "list-item-sub" },
-                      h("span", null, companyName),
-                      h("span", { className: "dot" }, "•"),
-                      h("span", null, clientName)
-                    ),
-                    h(
-                      "div",
-                      { className: "list-item-meta" },
-                      h(
-                        "span",
-                        { className: `pill status ${statusClass}` },
-                        statusLabel || "Status"
-                      ),
-                      h(
-                        "span",
-                        { className: `pill priority ${priorityClass}` },
-                        priorityLabel || "Priority"
-                      )
-                    )
-                  );
-                })
+            "p",
+            { className: "header-subtitle" },
+            "Select a company on the left. On the right you get its full work list, status filters and CRM editor in one view."
           )
         ),
         h(
+          "div",
+          { className: "panel-actions" },
+          h(
+            "button",
+            {
+              type: "button",
+              className: "btn-secondary",
+              onClick: () => loadWorkSchedules(),
+              disabled: !xrm || loading.workSchedules,
+            },
+            loading.workSchedules ? "Refreshing..." : "Refresh"
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              className: "btn-primary",
+              onClick: handleNewWork,
+              disabled: formDisabled,
+            },
+            "+ Work"
+          )
+        )
+      ),
+      h(
+        "div",
+        { className: "workspace modern-workspace" },
+        h(
           "section",
-          { className: "panel detail-panel" },
+          { className: "panel list-panel company-panel" },
           h(
             "div",
-            { className: "panel-header" },
+            { className: "panel-header company-panel-header" },
             h(
               "div",
-            { className: "panel-title" },
-            showEyebrow ? h("p", { className: "eyebrow" }, "Details") : null,
+              { className: "panel-title" },
+              h("p", { className: "eyebrow" }, "Companies"),
+              h("h2", null, "Company Rail")
+            ),
+            h("span", { className: "range-count" }, `${groupedCompanies.length} groups`)
+          ),
+          h("input", {
+            className: "company-search",
+            type: "search",
+            value: companySearch,
+            onChange: (event) => setCompanySearch(event.target.value),
+            placeholder: "Search company",
+            disabled: !xrm || loading.workSchedules,
+          }),
+          h(
+            "div",
+            { className: "company-summary-card" },
+            h("strong", null, "Grouped by company"),
             h(
-              "h2",
+              "p",
               null,
-                isCreateMode
-                  ? "New Work"
-                  : isEditMode
-                  ? "Edit Work"
-                  : "Work Details"
+              "A company appears once on the left. Click it to open all related records on the right."
+            )
+          ),
+          h(
+            "div",
+            { className: "company-list" },
+            !visibleCompanies.length
+              ? h("div", { className: "empty" }, "No companies available for these filters.")
+              : visibleCompanies.map((group) =>
+                  h(CompanyCard, {
+                    key: group.id,
+                    group,
+                    selected: group.id === selectedCompanyId,
+                    onSelect: () => setSelectedCompanyId(group.id),
+                  })
+                )
+          )
+        ),
+        h(
+          "div",
+          { className: "workboard-column" },
+          h(
+            "section",
+            { className: "panel workboard-hero" },
+            h(
+              "div",
+              { className: "hero-layout" },
+              h(
+                "div",
+                { className: "hero-copy" },
+                h("p", { className: "eyebrow" }, "Company Workboard"),
+                h(
+                  "h2",
+                  { className: "hero-title" },
+                  selectedCompanyGroup
+                    ? selectedCompanyGroup.name
+                    : "Select a company"
+                ),
+                h(
+                  "p",
+                  { className: "hero-subtitle" },
+                  selectedCompanyGroup
+                    ? "Default view shows active work items. Change the filter to see every status or focus on one status only."
+                    : "Choose a company from the left rail to load its work items."
+                ),
+                h(
+                  "div",
+                  { className: "hero-metrics" },
+                  h(MetricCard, {
+                    label: "Total",
+                    value: selectedCompanyGroup ? selectedCompanyGroup.totalCount : 0,
+                  }),
+                  h(MetricCard, {
+                    label: "Active",
+                    value: selectedCompanyGroup ? selectedCompanyGroup.activeCount : 0,
+                    tone: "accent",
+                  }),
+                  h(MetricCard, {
+                    label: "Completed",
+                    value: selectedCompanyGroup ? selectedCompanyGroup.completedCount : 0,
+                  }),
+                  h(MetricCard, {
+                    label: "Due Soon",
+                    value: selectedCompanyGroup ? selectedCompanyGroup.dueSoonCount : 0,
+                    tone: "warning",
+                  })
+                )
+              ),
+              h(HeroScene, {
+                group: selectedCompanyGroup,
+                statusFilter,
+              })
+            )
+          ),
+          h(
+            "section",
+            { className: "panel board-toolbar" },
+            h(
+              "div",
+              { className: "panel-actions board-toolbar-actions" },
+              STATUS_FILTER_OPTIONS.map((option) =>
+                h(FilterChip, {
+                  key: option.value,
+                  label: option.label,
+                  active: statusFilter === option.value,
+                  disabled: !xrm || loading.workSchedules,
+                  onClick: () => setStatusFilter(option.value),
+                })
               )
             ),
             h(
               "div",
-              { className: "panel-actions" },
-              canShowForm
-                ? h(
-                    "button",
-                    {
-                      type: "button",
-                      className: "btn-secondary",
-                      onClick: handleFormReset,
-                      disabled: formDisabled,
-                    },
-                    resetLabel
-                  )
-                : null,
-              canShowForm
-                ? h(
-                    "button",
-                    {
-                      type: "submit",
-                      form: formId,
-                      className: "btn-primary",
-                      disabled: formDisabled,
-                    },
-                    saveLabel
-                  )
-                : null,
+              { className: "toolbar-grid" },
               h(
-                "button",
+                "select",
                 {
-                  type: "button",
-                  className: "btn-primary",
-                  onClick: handleNewWork,
-                  disabled: formDisabled,
+                  id: "dateRange",
+                  className: "filter-select",
+                  value: dateRange,
+                  onChange: handleRangeChange,
+                  disabled: !xrm || loading.workSchedules,
                 },
-                "+ Work"
-              )
+                DATE_RANGE_OPTIONS.map((option) =>
+                  h(
+                    "option",
+                    { key: option.value, value: option.value },
+                    option.label
+                  )
+                )
+              ),
+              h(
+                "select",
+                {
+                  id: "typeFilter",
+                  className: "filter-select",
+                  value: typeFilter,
+                  onChange: handleTypeFilterChange,
+                  disabled: !xrm || loading.workSchedules,
+                },
+                typeFilterOptions
+              ),
+              h("input", {
+                className: "work-search",
+                type: "search",
+                value: workSearch,
+                onChange: (event) => setWorkSearch(event.target.value),
+                placeholder: "Search work, client or notes",
+                disabled: !selectedCompanyGroup,
+              })
+            ),
+            dateRange === "custom"
+              ? h(
+                  "div",
+                  { className: "filter-dates" },
+                  h(
+                    "div",
+                    { className: "filter-date" },
+                    h("label", { htmlFor: "fromDate" }, "From date"),
+                    h("input", {
+                      id: "fromDate",
+                      type: "date",
+                      value: customFrom,
+                      onChange: handleCustomFromChange,
+                      disabled: !xrm || loading.workSchedules,
+                      max: customTo || undefined,
+                    })
+                  ),
+                  h(
+                    "div",
+                    { className: "filter-date" },
+                    h("label", { htmlFor: "toDate" }, "To date"),
+                    h("input", {
+                      id: "toDate",
+                      type: "date",
+                      value: customTo,
+                      onChange: handleCustomToChange,
+                      disabled: !xrm || loading.workSchedules,
+                      min: customFrom || undefined,
+                    })
+                  )
+                )
+              : null,
+            h(
+              "div",
+              { className: "range-meta" },
+              h("span", { className: "range-label" }, rangeLabel),
+              h("span", { className: "range-count" }, listCountLabel)
             )
           ),
-          alert
-            ? h("div", { className: `alert ${alert.type}` }, alert.text)
-            : null,
-          isEditMode && selectedRecord
-            ? h(
+          h(
+            "div",
+            { className: "board-grid" },
+            h(
+              "section",
+              { className: "panel work-panel" },
+              h(
                 "div",
-                { className: "record-summary" },
+                { className: "panel-header work-panel-header" },
                 h(
                   "div",
-                  { className: "record-title" },
-                  selectedRecord.tcrm_name || "(No name)"
+                  { className: "panel-title" },
+                  h("p", { className: "eyebrow" }, "Right Side"),
+                  h(
+                    "h2",
+                    null,
+                    selectedCompanyGroup
+                      ? `${selectedCompanyGroup.name} Work List`
+                      : "Work List"
+                  )
+                ),
+                h(
+                  "span",
+                  { className: "range-count" },
+                  getStatusFilterLabel(statusFilter)
+                )
+              ),
+              h(
+                "div",
+                { className: "work-list" },
+                !selectedCompanyGroup
+                  ? h(
+                      "div",
+                      { className: "empty-state" },
+                      "Select a company from the left rail to load its work items."
+                    )
+                  : !visibleCompanyRecords.length
+                  ? h(
+                      "div",
+                      { className: "empty-state" },
+                      "No work items match the current company filters."
+                    )
+                  : visibleCompanyRecords.map((item) =>
+                      h(WorkCard, {
+                        key: item.tcrm_workscheduleid,
+                        item,
+                        selected: item.tcrm_workscheduleid === selectedId,
+                        disabled: !xrm || loading.saving,
+                        quickSaving: quickSavingId === item.tcrm_workscheduleid,
+                        onSelect: () => handleSelectRecord(item),
+                        onQuickStatusChange: (value) =>
+                          handleQuickStatusUpdate(item, value),
+                      })
+                    )
+              )
+            ),
+            h(
+              "section",
+              { className: "panel detail-panel" },
+              h(
+                "div",
+                { className: "panel-header" },
+                h(
+                  "div",
+                  { className: "panel-title" },
+                  h("p", { className: "eyebrow" }, "Editor"),
+                  h(
+                    "h2",
+                    null,
+                    isCreateMode
+                      ? "Create Work"
+                      : isEditMode
+                      ? "Update Work"
+                      : "Work Details"
+                  )
                 ),
                 h(
                   "div",
-                  { className: "record-meta" },
-                  h(
-                    "span",
-                    null,
-                    `ETA: ${formatDateTime(selectedRecord.tcrm_eta) || "Not set"}`
-                  ),
-                  h(
-                    "span",
-                    null,
-                    `Status: ${getStatusLabel(selectedRecord) || "Unknown"}`
-                  )
+                  { className: "panel-actions" },
+                  canShowForm
+                    ? h(
+                        "button",
+                        {
+                          type: "button",
+                          className: "btn-secondary",
+                          onClick: handleFormReset,
+                          disabled: formDisabled,
+                        },
+                        resetLabel
+                      )
+                    : null,
+                  canShowForm
+                    ? h(
+                        "button",
+                        {
+                          type: "submit",
+                          form: formId,
+                          className: "btn-primary",
+                          disabled: formDisabled,
+                        },
+                        saveLabel
+                      )
+                    : null
                 )
-              )
-            : null,
-          canShowForm
-            ? h(
-                "form",
-                {
-                  id: formId,
-                  onSubmit: isCreateMode ? handleCreate : handleUpdate,
-                },
-                formFields
-              )
-            : h(
-                "div",
-                { className: "empty-state" },
-                "Select a work schedule from the left or click + Work to create a new one."
-              )
+              ),
+              alert
+                ? h("div", { className: `alert ${alert.type}` }, alert.text)
+                : null,
+              isEditMode && selectedRecord
+                ? h(
+                    "div",
+                    { className: "record-summary modern-summary" },
+                    h(
+                      "div",
+                      { className: "record-title" },
+                      selectedRecord.tcrm_name || "(No name)"
+                    ),
+                    h(
+                      "div",
+                      { className: "summary-strip" },
+                      h(
+                        "span",
+                        { className: "summary-chip" },
+                        h(AppIcon, { name: "company", small: true }),
+                        getCompanyName(selectedRecord)
+                      ),
+                      h(
+                        "span",
+                        { className: "summary-chip" },
+                        h(AppIcon, { name: "client", small: true }),
+                        getClientName(selectedRecord)
+                      ),
+                      h(
+                        "span",
+                        { className: "summary-chip" },
+                        h(AppIcon, { name: "status", small: true }),
+                        getStatusLabel(selectedRecord) || "Unknown"
+                      ),
+                      h(
+                        "span",
+                        { className: "summary-chip" },
+                        h(AppIcon, { name: "clock", small: true }),
+                        `ETA: ${formatDateTime(selectedRecord.tcrm_eta) || "Not set"}`
+                      )
+                    ),
+                    h(
+                      "div",
+                      { className: "record-meta" },
+                      h(
+                        "span",
+                        null,
+                        `${countNotesInDescription(selectedRecord.tcrm_description)} notes in description`
+                      ),
+                      h(
+                        "span",
+                        null,
+                        `${getTypeLabel(selectedRecord)} / ${getPriorityLabel(selectedRecord)}`
+                      )
+                    )
+                  )
+                : null,
+              canShowForm
+                ? h(
+                    "form",
+                    {
+                      id: formId,
+                      onSubmit: isCreateMode ? handleCreate : handleUpdate,
+                    },
+                    formFields
+                  )
+                : h(
+                    "div",
+                    { className: "empty-state" },
+                    "Select a work item from the right-side list or click + Work to create a new one."
+                  )
+            )
+          )
         )
       ),
       scheduleOpen
@@ -1549,7 +2828,7 @@
                 h(
                   "h3",
                   { id: scheduleDialogTitleId, className: "modal-title" },
-                  "Schedule"
+                  "Notes Board"
                 ),
                 h(
                   "div",
@@ -1608,54 +2887,131 @@
                     )
                   ),
                   h(
-                    "p",
-                    { className: "notes-hint" },
-                    "Add point-by-point notes and set a status for each one."
-                  ),
-                  notes.map((note, index) =>
+                    "div",
+                    { className: "schedule-toolbar" },
                     h(
                       "div",
-                      { className: `note-row status-${note.status}`, key: note.id },
-                      h("div", { className: "note-index" }, `${index + 1}.`),
-                      h("textarea", {
-                        className: "note-input",
-                        value: note.text,
-                        placeholder: "Write a note",
-                        rows: 1,
-                        onChange: (event) =>
-                          handleNoteTextChange(note.id, event),
-                        disabled: formDisabled,
-                      }),
+                      { className: "rich-toolbar" },
                       h(
-                        "select",
-                        {
-                          className: "note-status",
-                          value: note.status,
-                          onChange: (event) =>
-                            handleNoteStatusChange(note.id, event),
-                          disabled: formDisabled,
-                        },
-                        NOTE_STATUS_OPTIONS.map((option) =>
-                          h(
-                            "option",
-                            { key: option.value, value: option.value },
-                            option.label
-                          )
+                        "span",
+                        { className: "toolbar-label" },
+                        "Text color"
+                      ),
+                      NOTE_COLOR_OPTIONS.map((option) =>
+                        h(
+                          "button",
+                          {
+                            key: option.value,
+                            type: "button",
+                            className: "rich-color",
+                            style: { background: option.value },
+                            onClick: () => handleApplyColor(option.value),
+                            disabled: formDisabled,
+                            title: option.label,
+                            "aria-label": `Set text color ${option.label}`,
+                          },
+                          ""
                         )
                       ),
-                      h(
-                        "button",
-                        {
-                          type: "button",
-                          className: "btn-ghost btn-inline note-remove",
-                          onClick: () => handleRemoveNote(note.id),
-                          disabled: formDisabled,
-                          "aria-label": "Remove note",
-                          title: "Remove note",
-                        },
-                        "x"
-                      )
+                      h("input", {
+                        type: "color",
+                        className: "rich-color",
+                        onChange: (event) => handleApplyColor(event.target.value),
+                        disabled: formDisabled,
+                        "aria-label": "Custom text color",
+                        title: "Custom text color",
+                      })
+                    ),
+                    h(
+                      "button",
+                      {
+                        type: "button",
+                        className: "btn-secondary btn-inline schedule-timestamp",
+                        onClick: handleInsertTimestamp,
+                        disabled: formDisabled || !activeNoteId,
+                      },
+                      "Insert timestamp"
                     )
+                  ),
+                  h(
+                    "p",
+                    { className: "notes-hint" },
+                    "Drag rows to reorder, set note status, and add timestamps when needed."
+                  ),
+                  notes.map((note, index) =>
+                    (() => {
+                      const isDragOver = dragOverNoteId === note.id;
+                      const isDragging = draggingNoteId === note.id;
+                      return h(
+                        "div",
+                        {
+                          className:
+                            `note-row status-${note.status}` +
+                            (isDragOver ? " drag-over" : "") +
+                            (isDragging ? " is-dragging" : ""),
+                          key: note.id,
+                          onDragOver: (event) => handleDragOver(note.id, event),
+                          onDragEnter: (event) => handleDragOver(note.id, event),
+                          onDrop: (event) => handleDrop(note.id, event),
+                          ref: (node) => setNoteRowRef(note.id, node),
+                        },
+                        h(
+                          "button",
+                          {
+                            type: "button",
+                            className: "note-drag-handle",
+                            draggable: true,
+                            onDragStart: (event) =>
+                              handleDragStart(note.id, event),
+                            onDragEnd: handleDragEnd,
+                            disabled: formDisabled,
+                          },
+                          "|||"
+                        ),
+                        h("div", { className: "note-index" }, `${index + 1}.`),
+                        h("div", {
+                          className: "note-input",
+                          contentEditable: !formDisabled,
+                          suppressContentEditableWarning: true,
+                          "data-placeholder": "Write a note",
+                          onInput: (event) => handleNoteInput(note.id, event),
+                          onFocus: () => handleNoteFocus(note.id),
+                          onMouseUp: () =>
+                            handleNoteSelectionChange(note.id),
+                          onKeyUp: () => handleNoteSelectionChange(note.id),
+                          role: "textbox",
+                          tabIndex: formDisabled ? -1 : 0,
+                          ref: (node) => setNoteEditorRef(note.id, node),
+                        }),
+                        h(
+                          "select",
+                          {
+                            className: "note-status",
+                            value: note.status,
+                            onChange: (event) =>
+                              handleNoteStatusChange(note.id, event),
+                            disabled: formDisabled,
+                          },
+                          NOTE_STATUS_OPTIONS.map((option) =>
+                            h(
+                              "option",
+                              { key: option.value, value: option.value },
+                              option.label
+                            )
+                          )
+                        ),
+                        h(
+                          "button",
+                          {
+                            type: "button",
+                            className: "btn-ghost btn-inline note-remove",
+                            onClick: () => handleRemoveNote(note.id),
+                            disabled: formDisabled,
+                          },
+                          "x"
+                        )
+                      );
+                    })()
                   )
                 )
               )
